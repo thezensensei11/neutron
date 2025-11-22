@@ -1,0 +1,35 @@
+{
+    "database": {
+        "url": "postgresql://neutron:password@localhost:5433/neutron"
+    },
+    "tasks": [
+        {
+            "type": "sync_metadata",
+            "params": {}
+        },
+        {
+            "type": "backfill_ohlcv",
+            "params": {
+                "timeframe": "1m",
+                "start_date": "2025-11-21T00:00:00",
+                "end_date": "2025-11-22T00:00:00"
+            },
+            "exchanges": {
+                "binance": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT",
+                            "ETH/USDT"
+                        ]
+                    },
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT:USDT",
+                            "ETH/USDT:USDT"
+                        ]
+                    }
+                }
+            }
+        }
+    ]
+}
