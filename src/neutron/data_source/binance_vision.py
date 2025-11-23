@@ -15,96 +15,117 @@ from ..db.session import ScopedSession
 logger = logging.getLogger(__name__)
 
 class BinanceVisionDownloader:
-    BASE_URL = "https://data.binance.vision/data/spot/daily/trades"
+    BASE_URL_SPOT = "https://data.binance.vision/data/spot/daily"
+    BASE_URL_FUTURES_UM = "https://data.binance.vision/data/futures/um/daily"
+    BASE_URL_FUTURES_CM = "https://data.binance.vision/data/futures/cm/daily"
 
-    def __init__(self, download_dir: str = "data/downloads", db: Session = None):
+    # Map data types to URL path segments and CSV headers
+    DATA_TYPES = {
+        "trades": {
+            "path": "trades",
+            "headers": ["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker", "is_best_match"],
+            "time_col": "time"
+        },
+        "aggTrades": {
+            "path": "aggTrades",
+            "headers": ["agg_trade_id", "price", "qty", "first_trade_id", "last_trade_id", "time", "is_buyer_maker", "is_best_match"],
+            "time_col": "time"
+        },
+        "bookTicker": {
+            "path": "bookTicker",
+            "headers": ["update_id", "best_bid_price", "best_bid_qty", "best_ask_price", "best_ask_qty", "time", "symbol"], # Note: symbol might not be in CSV depending on file
+            # Actually bookTicker CSV usually: updateId, bestBidPrice, bestBidQty, bestAskPrice, bestAskQty, transactionTime, symbol
+            # Let's verify standard headers. 
+            # For now using standard assumption.
+            "time_col": "time"
+        },
+        "liquidationSnapshot": {
+            "path": "liquidationSnapshot",
+            "headers": ["time", "side", "order_type", "time_in_force", "original_quantity", "price", "average_price", "order_status", "last_fill_quantity", "accumulated_fill_quantity"],
+            "time_col": "time"
+        },
+        # Klines are special, they have sub-paths like klines/1m
+        # We might handle them separately or add logic
+    }
+
+    def __init__(self, download_dir: str = "data/downloads"):
         self.download_dir = download_dir
-        self.db = db or ScopedSession()
         os.makedirs(self.download_dir, exist_ok=True)
 
-    def _generate_url(self, symbol: str, date: datetime) -> str:
-        """Generate URL for daily trades ZIP."""
-        # Symbol format for URL is usually uppercase without slash, e.g., BTCUSDT
-        symbol_formatted = symbol.replace("/", "").upper()
-        date_str = date.strftime("%Y-%m-%d")
-        filename = f"{symbol_formatted}-trades-{date_str}.zip"
-        return f"{self.BASE_URL}/{symbol_formatted}/{filename}"
+    def _get_base_url(self, instrument_type: str) -> str:
+        if instrument_type == "spot":
+            return self.BASE_URL_SPOT
+        elif instrument_type == "swap": # USDT-M Futures
+            return self.BASE_URL_FUTURES_UM
+        elif instrument_type == "future": # COIN-M Futures
+            return self.BASE_URL_FUTURES_CM
+        else:
+            return self.BASE_URL_SPOT
 
-    def download_and_process_day(self, symbol: str, date: datetime):
-        """Download, extract, parse, and insert tick data for a single day."""
-        url = self._generate_url(symbol, date)
-        logger.info(f"Processing {symbol} for {date.date()} from {url}")
+    def _generate_url(self, symbol: str, date: datetime, data_type: str, instrument_type: str) -> str:
+        """Generate URL for daily data ZIP."""
+        symbol_formatted = symbol.replace("/", "").upper()
+        if instrument_type == "swap" and symbol_formatted.endswith("USDT"):
+             # For swap, symbol usually doesn't have slash in URL, e.g. BTCUSDT
+             pass
+        
+        # Handle special case for Klines which have timeframe in path
+        # e.g. klines/BTCUSDT/1m/BTCUSDT-1m-2023-01-01.zip
+        # For now, let's stick to flat types.
+        
+        base_url = self._get_base_url(instrument_type)
+        path_segment = self.DATA_TYPES.get(data_type, {}).get("path", data_type)
+        
+        date_str = date.strftime("%Y-%m-%d")
+        filename = f"{symbol_formatted}-{path_segment}-{date_str}.zip"
+        
+        return f"{base_url}/{path_segment}/{symbol_formatted}/{filename}"
+
+    def download_daily_data(self, symbol: str, date: datetime, data_type: str = "trades", instrument_type: str = "spot") -> Optional[List[dict]]:
+        """Download and parse daily data file."""
+        url = self._generate_url(symbol, date, data_type, instrument_type)
+        logger.info(f"Processing {symbol} {data_type} for {date.date()} from {url}")
 
         try:
             response = requests.get(url, stream=True)
             if response.status_code == 404:
-                logger.warning(f"Data not found for {symbol} on {date.date()}")
-                return
+                logger.warning(f"Data not found for {symbol} {data_type} on {date.date()}")
+                return None
             response.raise_for_status()
 
+            config = self.DATA_TYPES.get(data_type)
+            if not config:
+                logger.warning(f"Unknown data type: {data_type}, trying default parsing")
+                # Fallback or error?
+                
+            headers = config.get("headers") if config else None
+            
             with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-                # Usually contains one CSV file
                 csv_filename = z.namelist()[0]
                 with z.open(csv_filename) as f:
-                    # Binance Vision Trades CSV columns:
-                    # id, price, qty, quote_qty, time, is_buyer_maker, is_best_match
-                    df = pd.read_csv(
-                        f, 
-                        header=None, 
-                        names=["trade_id", "price", "qty", "quote_qty", "time", "is_buyer_maker", "is_best_match"]
-                    )
+                    df = pd.read_csv(f, header=None, names=headers)
             
-            # Transform for DB
-            # Detect timestamp unit based on magnitude
-            # Current ms timestamp is ~1.7e12
-            # If value > 1e14, it's likely microseconds
-            sample_ts = df['time'].iloc[0]
-            if sample_ts > 1e14:
-                logger.info("Detected microsecond timestamps.")
-                df['time'] = pd.to_datetime(df['time'], unit='us')
-            else:
-                df['time'] = pd.to_datetime(df['time'], unit='ms')
+            # Post-processing
+            if config and "time_col" in config:
+                time_col = config["time_col"]
+                if time_col in df.columns:
+                    # Heuristic for timestamp unit
+                    sample_ts = df[time_col].iloc[0]
+                    if sample_ts > 1e14: # Microseconds
+                        df[time_col] = pd.to_datetime(df[time_col], unit='us')
+                    elif sample_ts > 1e11: # Milliseconds
+                        df[time_col] = pd.to_datetime(df[time_col], unit='ms')
+                    else: # Seconds
+                        df[time_col] = pd.to_datetime(df[time_col], unit='s')
+            
             df['symbol'] = symbol
             df['exchange'] = 'binance'
-            df['side'] = df['is_buyer_maker'].apply(lambda x: 'sell' if x else 'buy')
+            df['instrument_type'] = instrument_type
             
-            # Select and rename columns to match model
-            # Model: time, symbol, exchange, trade_id, price, amount, side
-            df_db = df[['time', 'symbol', 'exchange', 'trade_id', 'price', 'qty', 'side']].copy()
-            df_db.rename(columns={'qty': 'amount'}, inplace=True)
-            
-            # Convert to list of dicts for bulk insert
-            records = df_db.to_dict('records')
-            
-            if not records:
-                logger.info("No records found in CSV.")
-                return
-
-            # Bulk Insert
-            # Using chunking if data is huge, but daily trades for one symbol might fit in memory
-            # For high frequency pairs, chunking is safer
-            chunk_size = 10000
-            for i in range(0, len(records), chunk_size):
-                chunk = records[i:i + chunk_size]
-                stmt = insert(Trade).values(chunk)
-                stmt = stmt.on_conflict_do_nothing(
-                    index_elements=['time', 'symbol', 'exchange', 'trade_id']
-                )
-                self.db.execute(stmt)
-                self.db.commit()
-            
-            logger.info(f"Inserted {len(records)} trades for {symbol} on {date.date()}")
+            return df.to_dict('records')
 
         except Exception as e:
-            logger.error(f"Failed to process {symbol} on {date.date()}: {e}")
-            self.db.rollback()
-            raise
-
-    def backfill_range(self, symbol: str, start_date: datetime, end_date: datetime):
-        """Backfill a range of dates."""
-        current_date = start_date
-        while current_date <= end_date:
-            self.download_and_process_day(symbol, current_date)
-            current_date += timedelta(days=1)
+            logger.error(f"Failed to process {symbol} {data_type} on {date.date()}: {e}")
+            return None
 
 

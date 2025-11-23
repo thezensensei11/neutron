@@ -1,0 +1,73 @@
+{
+    "storage": {
+        "type": "database"
+    },
+    "tasks": [
+        {
+            "type": "sync_metadata",
+            "params": {}
+        },
+        {
+            "type": "backfill_ohlcv",
+            "params": {
+                "timeframe": "1h",
+                "start_date": "2010-01-01T00:00:00",
+                "rewrite": true
+            },
+            "exchanges": {
+                "binance": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    },
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT:USDT"
+                        ]
+                    }
+                },
+                "bitstamp": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USD"
+                        ]
+                    }
+                },
+                "bitfinex": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USD"
+                        ]
+                    }
+                },
+                "bybit": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    },
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT:USDT"
+                        ]
+                    }
+                },
+                "coinbase": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USD"
+                        ]
+                    }
+                },
+                "hyperliquid": {
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDC"
+                        ]
+                    }
+                }
+            }
+        }
+    ]
+}

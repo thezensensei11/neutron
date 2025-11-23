@@ -6,110 +6,15 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 import logging
 
 from .base import Exchange
+from .ccxt_base import CCXTExchange
 
 logger = logging.getLogger(__name__)
 
-class BinanceExchange(Exchange):
-    """Binance exchange implementation using CCXT."""
+class BinanceExchange(CCXTExchange):
+    """Binance exchange implementation."""
 
     def __init__(self, default_type: str = 'spot'):
-        super().__init__("binance")
-        self.default_type = default_type
-        self.client = ccxt.binance({
-            'enableRateLimit': True,
-            'options': {
-                'defaultType': default_type,  # 'spot', 'future', 'swap' (perp)
-            }
-        })
-
-    def get_rate_limit(self) -> int:
-        return self.client.rateLimit
-
-    @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=4, max=60),
-        retry=retry_if_exception_type((ccxt.NetworkError, ccxt.RateLimitExceeded))
-    )
-    def load_markets(self) -> Dict[str, Any]:
-        """Load markets with retry logic."""
-        try:
-            return self.client.load_markets()
-        except Exception as e:
-            logger.error(f"Error loading markets: {e}")
-            raise
-
-    @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=4, max=60),
-        retry=retry_if_exception_type((ccxt.NetworkError, ccxt.RateLimitExceeded))
-    )
-    def fetch_ohlcv(
-        self, 
-        symbol: str, 
-        timeframe: str = '1m', 
-        since: Optional[datetime] = None, 
-        limit: Optional[int] = 1000
-    ) -> List[Dict[str, Any]]:
-        """
-        Fetch OHLCV data with robust error handling and retries.
-        Returns a list of dictionaries with keys: time, open, high, low, close, volume.
-        """
-        since_ts = int(since.timestamp() * 1000) if since else None
-        
-        try:
-            ohlcv = self.client.fetch_ohlcv(symbol, timeframe, since=since_ts, limit=limit)
-            
-            # Parse into list of dicts
-            data = []
-            for candle in ohlcv:
-                # CCXT returns [timestamp, open, high, low, close, volume]
-                data.append({
-                    'time': datetime.fromtimestamp(candle[0] / 1000, tz=timezone.utc),
-                    'symbol': symbol,
-                    'exchange': self.exchange_id,
-                    'timeframe': timeframe,
-                    'open': float(candle[1]),
-                    'high': float(candle[2]),
-                    'low': float(candle[3]),
-                    'close': float(candle[4]),
-                    'volume': float(candle[5])
-                })
-            return data
-            
-        except Exception as e:
-            logger.error(f"Error fetching OHLCV for {symbol}: {e}")
-            raise
-
-    @retry(
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=4, max=60),
-        retry=retry_if_exception_type((ccxt.NetworkError, ccxt.RateLimitExceeded))
-    )
-    def fetch_funding_rate_history(
-        self, 
-        symbol: str, 
-        since: Optional[datetime] = None, 
-        limit: Optional[int] = 1000
-    ) -> List[Dict[str, Any]]:
-        """Fetch funding rate history."""
-        since_ts = int(since.timestamp() * 1000) if since else None
-        try:
-            # CCXT method for funding rate history
-            funding_rates = self.client.fetch_funding_rate_history(symbol, since=since_ts, limit=limit)
-            
-            data = []
-            for rate in funding_rates:
-                data.append({
-                    'time': datetime.fromtimestamp(rate['timestamp'] / 1000, tz=timezone.utc),
-                    'symbol': symbol,
-                    'exchange': self.exchange_id,
-                    'rate': float(rate['fundingRate']),
-                    'mark_price': float(rate['markPrice']) if rate.get('markPrice') is not None else None
-                })
-            return data
-        except Exception as e:
-            logger.error(f"Error fetching funding rates for {symbol}: {e}")
-            raise
+        super().__init__("binance", default_type=default_type)
 
     @retry(
         stop=stop_after_attempt(5),

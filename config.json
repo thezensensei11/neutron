@@ -1,31 +1,175 @@
 {
+    "_comment": "Neutron Master Configuration. See configuration.md for details.",
+    "storage": {
+        "type": "database",
+        "_help": "Set 'type' to 'database' or 'parquet'. If 'parquet', provide 'path'.",
+        "_unused_parquet_example": {
+            "type": "parquet",
+            "path": "Data"
+        }
+    },
     "database": {
         "url": "postgresql://neutron:password@localhost:5433/neutron"
     },
     "tasks": [
         {
+            "_comment": "Task 1: Sync Metadata (All configured exchanges)",
             "type": "sync_metadata",
             "params": {}
         },
         {
+            "_comment": "Task 2: Backfill OHLCV (Candles)",
             "type": "backfill_ohlcv",
             "params": {
                 "timeframe": "1m",
-                "start_date": "2025-11-21T00:00:00",
-                "end_date": "2025-11-22T00:00:00"
+                "start_date": "2020-11-21T00:00:00",
+                "end_date": "2020-11-23T00:00:00"
             },
             "exchanges": {
                 "binance": {
                     "spot": {
                         "symbols": [
-                            "BTC/USDT",
-                            "ETH/USDT"
+                            "BTC/USDT"
                         ]
                     },
                     "swap": {
                         "symbols": [
-                            "BTC/USDT:USDT",
-                            "ETH/USDT:USDT"
+                            "BTC/USDT:USDT"
+                        ]
+                    }
+                },
+                "bitstamp": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USD"
+                        ]
+                    }
+                },
+                "bitmex": {
+                    "swap": {
+                        "symbols": [
+                            "BTC/USD:BTC"
+                        ]
+                    }
+                },
+                "bitfinex": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USD"
+                        ]
+                    }
+                },
+                "bybit": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    },
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT:USDT"
+                        ]
+                    }
+                },
+                "coinbase": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USD"
+                        ]
+                    }
+                },
+                "hyperliquid": {
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDC"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "_comment": "Task 3: Backfill Tick Data (Trades) - Binance Vision",
+            "_unused_type": "backfill_tick_data",
+            "_unused_params": {
+                "start_date": "2023-01-01T00:00:00",
+                "end_date": "2023-01-02T00:00:00",
+                "rewrite": false
+            },
+            "_unused_exchanges": {
+                "binance": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "_comment": "Task 4: Backfill Aggregated Trades - Binance Vision",
+            "_unused_type": "backfill_agg_trades",
+            "_unused_params": {
+                "start_date": "2023-01-01T00:00:00",
+                "end_date": "2023-01-02T00:00:00",
+                "rewrite": false
+            },
+            "_unused_exchanges": {
+                "binance": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "_comment": "Task 5: Backfill Book Ticker (Best Bid/Ask) - Binance Vision",
+            "_unused_type": "backfill_book_ticker",
+            "_unused_params": {
+                "start_date": "2023-01-01T00:00:00",
+                "end_date": "2023-01-02T00:00:00",
+                "rewrite": false
+            },
+            "_unused_exchanges": {
+                "binance": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "_comment": "Task 6: Backfill Liquidations - Binance Vision (Futures Only)",
+            "_unused_type": "backfill_liquidation",
+            "_unused_params": {
+                "start_date": "2023-01-01T00:00:00",
+                "end_date": "2023-01-02T00:00:00",
+                "rewrite": false
+            },
+            "_unused_exchanges": {
+                "binance": {
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "_comment": "Task 7: Backfill Funding Rates - CCXT",
+            "_unused_type": "backfill_funding",
+            "_unused_params": {
+                "start_date": "2023-01-01T00:00:00"
+            },
+            "_unused_exchanges": {
+                "binance": {
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT:USDT"
                         ]
                     }
                 }

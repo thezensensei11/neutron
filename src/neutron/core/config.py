@@ -10,8 +10,14 @@ class TaskConfig:
     exchanges: Dict[str, Dict[str, Dict[str, List[str]]]] = None # exchange -> instrument_type -> params (e.g. symbols)
 
 @dataclass
+class StorageConfig:
+    type: str = "database" # "database" or "parquet"
+    path: Optional[str] = None # for parquet
+    database_url: Optional[str] = None # for database
+
+@dataclass
 class NeutronConfig:
-    database_url: Optional[str]
+    storage: StorageConfig
     tasks: List[TaskConfig]
 
 class ConfigLoader:
@@ -32,7 +38,21 @@ class ConfigLoader:
                 exchanges=task_data.get('exchanges', {})
             ))
 
+        storage_data = data.get('storage', {})
+        # Backwards compatibility: check root 'database' key if storage not present
+        if not storage_data and 'database' in data:
+            storage_data = {
+                'type': 'database',
+                'database_url': data['database'].get('url')
+            }
+            
+        storage_config = StorageConfig(
+            type=storage_data.get('type', 'database'),
+            path=storage_data.get('path'),
+            database_url=storage_data.get('database_url')
+        )
+
         return NeutronConfig(
-            database_url=data.get('database', {}).get('url'),
+            storage=storage_config,
             tasks=tasks
         )
