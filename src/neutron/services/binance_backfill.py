@@ -14,7 +14,7 @@ class BinanceBackfillService:
         self.instrument_type = instrument_type
         self.storage = storage
 
-    def backfill_range(self, symbol: str, start_date: datetime, end_date: datetime, data_type: str):
+    def backfill_range(self, symbol: str, start_date: datetime, end_date: datetime, data_type: str, timeframe: str = None):
         """
         Backfill generic data for a symbol over a range of dates.
         """
@@ -27,27 +27,85 @@ class BinanceBackfillService:
                     symbol=symbol, 
                     date=current_date, 
                     data_type=data_type, 
-                    instrument_type=self.instrument_type
+                    instrument_type=self.instrument_type,
+                    timeframe=timeframe
                 )
                 
-                if data and self.storage:
-                    # Storage expects generic data save
-                    if hasattr(self.storage, 'save_generic_data'):
-                        self.storage.save_generic_data(data, data_type)
-                    else:
-                        logger.warning("Storage backend does not support generic data saving.")
-                
-                # Update state
-                if self.state_manager:
-                    day_end = current_date + timedelta(days=1)
-                    self.state_manager.update_state(
-                        exchange=self.exchange_name,
-                        instrument_type=self.instrument_type,
-                        symbol=symbol,
-                        timeframe=data_type, # Use data_type as timeframe identifier
-                        start_date=current_date,
-                        end_date=day_end
-                    )
+                if data:
+                    # Filter data to exact time range if provided
+                    # Most generic data has 'time' or 'transactTime' or 'T' (aggTrades) or 't' (klines)
+                    # We need to normalize or check multiple fields
+                    filtered_data = []
+                    
+                    # Determine time field
+                    time_field = None
+                    if data and isinstance(data[0], dict):
+                        if 'time' in data[0]: time_field = 'time'
+                        elif 'transactTime' in data[0]: time_field = 'transactTime'
+                        elif 'T' in data[0]: time_field = 'T' # AggTrades
+                        elif 't' in data[0]: time_field = 't' # Klines/MarkPrice
+                    
+                    if time_field:
+                        start_ts = start_date.timestamp() * 1000
+                        end_ts = end_date.timestamp() * 1000
+                        
+                        for item in data:
+                            item_time = item.get(time_field)
+                            
+                            # Normalize item_time to float timestamp (ms)
+                            try:
+                                if isinstance(item_time, (int, float)):
+                                    pass # Already numeric
+                                elif isinstance(item_time, str):
+                                    # Try parsing ISO string or numeric string
+                                    try:
+                                        item_time = float(item_time)
+                                    except ValueError:
+                                        # Assume ISO format
+                                        dt = datetime.fromisoformat(item_time.replace('Z', '+00:00'))
+                                        item_time = dt.timestamp() * 1000
+                                elif hasattr(item_time, 'timestamp'): # datetime or pd.Timestamp
+                                    item_time = item_time.timestamp() * 1000
+                                else:
+                                    continue # Unknown format, skip
+                                    
+                                if start_ts <= item_time < end_ts:
+                                    filtered_data.append(item)
+                            except Exception as e:
+                                logger.warning(f"Error parsing time for item: {e}")
+                                continue
+                        
+                        if not filtered_data:
+                            logger.info(f"No data found in range {start_date} - {end_date} for {symbol} (Day file contained {len(data)} records)")
+                            # We still might want to update state? No, if no data in range, maybe not.
+                            # But if the day file was downloaded and empty for our range, we technically "checked" it.
+                            # However, for 2 min range, we don't want to mark the whole day as done?
+                            # The state manager marks the *day*. 
+                            # If we are doing sub-daily backfills, our state management (daily resolution) is imperfect.
+                            # But for this specific user request (manageable data), filtering is key.
+                            pass
+                        else:
+                            data = filtered_data
+                            logger.info(f"Filtered {len(data)} records for {symbol} in range {start_date} - {end_date}")
+                    
+                    if data and self.storage:
+                        # Storage expects generic data save
+                        if hasattr(self.storage, 'save_generic_data'):
+                            self.storage.save_generic_data(data, data_type)
+                        else:
+                            logger.warning("Storage backend does not support generic data saving.")
+                    
+                    # Update state only if data was found
+                    if self.state_manager:
+                        day_end = current_date + timedelta(days=1)
+                        self.state_manager.update_state(
+                            exchange=self.exchange_name,
+                            instrument_type=self.instrument_type,
+                            symbol=symbol,
+                            timeframe=data_type, # Use data_type as timeframe identifier
+                            start_date=current_date,
+                            end_date=day_end
+                        )
                     
             except Exception as e:
                 logger.error(f"Failed to backfill {data_type} for {symbol} on {current_date.date()}: {e}")

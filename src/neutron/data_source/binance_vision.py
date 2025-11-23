@@ -49,8 +49,44 @@ class BinanceVisionDownloader:
             "headers": ["create_time", "symbol", "sum_open_interest", "sum_open_interest_value", "count_top_trader_long_short_ratio", "sum_top_trader_long_short_ratio", "count_long_short_ratio", "sum_long_short_ratio"],
             "time_col": "create_time"
         },
-        # Klines are special, they have sub-paths like klines/1m
-        # We might handle them separately or add logic
+        "fundingRate": {
+            "path": "fundingRate",
+            "headers": ["calc_time", "symbol", "last_funding_rate"], # Standard headers
+            "time_col": "calc_time"
+        },
+        "markPriceKlines": {
+            "path": "markPriceKlines",
+            "headers": ["open_time", "open", "high", "low", "close", "ignore", "ignore", "ignore", "count", "ignore", "ignore", "ignore"],
+            "time_col": "open_time"
+        },
+        "indexPriceKlines": {
+            "path": "indexPriceKlines",
+            "headers": ["open_time", "open", "high", "low", "close", "ignore", "ignore", "ignore", "count", "ignore", "ignore", "ignore"],
+            "time_col": "open_time"
+        },
+        "premiumIndexKlines": {
+            "path": "premiumIndexKlines",
+            "headers": ["open_time", "open", "high", "low", "close", "ignore", "ignore", "ignore", "count", "ignore", "ignore", "ignore"],
+            "time_col": "open_time"
+        }
+    }
+
+    # Define availability based on instrument type and frequency (daily/monthly)
+    # Currently we only support daily downloads in this class
+    AVAILABILITY_MAP = {
+        "spot": {
+            "daily": {"aggTrades", "klines", "trades"},
+            "monthly": {"aggTrades", "klines", "trades"}
+        },
+        "swap": { # USDT-M Futures (UM)
+            "daily": {"aggTrades", "bookDepth", "bookTicker", "indexPriceKlines", "klines", "markPriceKlines", "metrics", "premiumIndexKlines", "trades"},
+            "monthly": {"aggTrades", "bookTicker", "fundingRate", "indexPriceKlines", "klines", "markPriceKlines", "premiumIndexKlines", "trades"}
+        },
+        "future": { # COIN-M Futures (CM)
+            # Assuming similar to UM for now, but can be refined
+            "daily": {"aggTrades", "bookDepth", "bookTicker", "indexPriceKlines", "klines", "markPriceKlines", "metrics", "premiumIndexKlines", "trades", "liquidationSnapshot"},
+            "monthly": {"aggTrades", "bookTicker", "fundingRate", "indexPriceKlines", "klines", "markPriceKlines", "premiumIndexKlines", "trades"}
+        }
     }
 
     def __init__(self, download_dir: str = "data/downloads"):
@@ -67,28 +103,37 @@ class BinanceVisionDownloader:
         else:
             return self.BASE_URL_SPOT
 
-    def _generate_url(self, symbol: str, date: datetime, data_type: str, instrument_type: str) -> str:
+    def _generate_url(self, symbol: str, date: datetime, data_type: str, instrument_type: str, timeframe: str = None) -> str:
         """Generate URL for daily data ZIP."""
         symbol_formatted = symbol.replace("/", "").upper()
         if instrument_type == "swap" and symbol_formatted.endswith("USDT"):
              # For swap, symbol usually doesn't have slash in URL, e.g. BTCUSDT
              pass
         
-        # Handle special case for Klines which have timeframe in path
-        # e.g. klines/BTCUSDT/1m/BTCUSDT-1m-2023-01-01.zip
-        # For now, let's stick to flat types.
-        
         base_url = self._get_base_url(instrument_type)
         path_segment = self.DATA_TYPES.get(data_type, {}).get("path", data_type)
         
         date_str = date.strftime("%Y-%m-%d")
-        filename = f"{symbol_formatted}-{path_segment}-{date_str}.zip"
         
-        return f"{base_url}/{path_segment}/{symbol_formatted}/{filename}"
+        # Handle Klines which have timeframe in path
+        kline_types = {"klines", "markPriceKlines", "indexPriceKlines", "premiumIndexKlines"}
+        if data_type in kline_types and timeframe:
+            # e.g. klines/BTCUSDT/1m/BTCUSDT-1m-2023-01-01.zip
+            filename = f"{symbol_formatted}-{timeframe}-{date_str}.zip"
+            return f"{base_url}/{path_segment}/{symbol_formatted}/{timeframe}/{filename}"
+        else:
+            filename = f"{symbol_formatted}-{path_segment}-{date_str}.zip"
+            return f"{base_url}/{path_segment}/{symbol_formatted}/{filename}"
 
-    def download_daily_data(self, symbol: str, date: datetime, data_type: str = "trades", instrument_type: str = "spot") -> Optional[List[dict]]:
+    def download_daily_data(self, symbol: str, date: datetime, data_type: str = "trades", instrument_type: str = "spot", timeframe: str = None) -> Optional[List[dict]]:
         """Download and parse daily data file."""
-        url = self._generate_url(symbol, date, data_type, instrument_type)
+        # Validate availability
+        available_types = self.AVAILABILITY_MAP.get(instrument_type, {}).get("daily", set())
+        if data_type not in available_types:
+            logger.warning(f"Data type '{data_type}' is not available for {instrument_type} (daily). Skipping download.")
+            return None
+
+        url = self._generate_url(symbol, date, data_type, instrument_type, timeframe)
         logger.info(f"Processing {symbol} {data_type} for {date.date()} from {url}")
 
         try:
@@ -113,15 +158,20 @@ class BinanceVisionDownloader:
             # Post-processing
             if config and "time_col" in config:
                 time_col = config["time_col"]
-                if time_col in df.columns:
+                if time_col in df.columns and not df.empty:
                     # Heuristic for timestamp unit
                     sample_ts = df[time_col].iloc[0]
-                    if sample_ts > 1e14: # Microseconds
-                        df[time_col] = pd.to_datetime(df[time_col], unit='us')
-                    elif sample_ts > 1e11: # Milliseconds
-                        df[time_col] = pd.to_datetime(df[time_col], unit='ms')
-                    else: # Seconds
-                        df[time_col] = pd.to_datetime(df[time_col], unit='s')
+                    
+                    if isinstance(sample_ts, (int, float)):
+                        if sample_ts > 1e14: # Microseconds
+                            df[time_col] = pd.to_datetime(df[time_col], unit='us')
+                        elif sample_ts > 1e11: # Milliseconds
+                            df[time_col] = pd.to_datetime(df[time_col], unit='ms')
+                        else: # Seconds
+                            df[time_col] = pd.to_datetime(df[time_col], unit='s')
+                    else:
+                        # Assume string or already datetime
+                        df[time_col] = pd.to_datetime(df[time_col])
             
             df['symbol'] = symbol
             df['exchange'] = 'binance'

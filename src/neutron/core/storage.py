@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy import select
 from ..db.session import ScopedSession
 from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot
-from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot, OpenInterest
+from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot, OpenInterest, BookDepth, IndexPriceKline, MarkPriceKline, PremiumIndexKline
 
 logger = logging.getLogger(__name__)
 
@@ -138,14 +138,31 @@ class DatabaseStorage(StorageBackend):
         if not data:
             return
 
+        # Data mapping for specific types
+        if data_type == 'trades':
+            for item in data:
+                # Map qty -> amount
+                if 'qty' in item and 'amount' not in item:
+                    item['amount'] = item['qty']
+                
+                # Map is_buyer_maker -> side
+                if 'is_buyer_maker' in item and 'side' not in item:
+                    # is_buyer_maker=True -> Sell (Maker was Buyer)
+                    # is_buyer_maker=False -> Buy (Maker was Seller)
+                    item['side'] = 'sell' if item['is_buyer_maker'] else 'buy'
+
         model_map = {
             'aggTrades': AggTrade,
             'bookTicker': BookTicker,
             'liquidationSnapshot': LiquidationSnapshot,
             'trades': Trade,
             'funding': FundingRate,
-            'metrics': OpenInterest, # Map metrics to OpenInterest for now
-            'openInterest': OpenInterest
+            'metrics': OpenInterest, 
+            'openInterest': OpenInterest,
+            'bookDepth': BookDepth,
+            'indexPriceKlines': IndexPriceKline,
+            'markPriceKlines': MarkPriceKline,
+            'premiumIndexKlines': PremiumIndexKline
         }
         
         model_class = model_map.get(data_type)
@@ -197,7 +214,11 @@ class DatabaseStorage(StorageBackend):
             'trades': Trade,
             'funding': FundingRate,
             'metrics': OpenInterest,
-            'openInterest': OpenInterest
+            'openInterest': OpenInterest,
+            'bookDepth': BookDepth,
+            'indexPriceKlines': IndexPriceKline,
+            'markPriceKlines': MarkPriceKline,
+            'premiumIndexKlines': PremiumIndexKline
         }
         
         model_class = model_map.get(data_type)

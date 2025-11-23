@@ -153,6 +153,72 @@ class LiquidationSnapshot(Base):
     # Actually, let's just use time/symbol/exchange/price/side/original_quantity as PK to be safe?
     # Or better, just add an autoincrement ID if we were using standard SQL, but here we want to upsert.
     # Let's use a broad composite PK.
+    # Let's use a broad composite PK.
     __table_args__ = (
         PrimaryKeyConstraint("time", "symbol", "exchange", "side", "price", "original_quantity"),
+    )
+
+class BookDepth(Base):
+    __tablename__ = "book_depths"
+
+    time = Column(DateTime(timezone=True), nullable=False)
+    symbol = Column(String, nullable=False)
+    exchange = Column(String, nullable=False)
+    update_id = Column(String, nullable=False) # lastUpdateId
+    bids = Column(JSON, nullable=False) # List of [price, qty]
+    asks = Column(JSON, nullable=False) # List of [price, qty]
+
+    __table_args__ = (
+        PrimaryKeyConstraint("time", "symbol", "exchange", "update_id"),
+    )
+
+class IndexPriceKline(Base):
+    __tablename__ = "index_price_klines"
+
+    time = Column(DateTime(timezone=True), nullable=False)
+    symbol = Column(String, nullable=False)
+    exchange = Column(String, nullable=False)
+    timeframe = Column(String, nullable=False)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    # Volume is usually 0 or not applicable for index price, but we'll keep it optional or omit
+    # Binance index klines don't have volume in the same way, but let's check.
+    # Usually it's just price.
+    
+    __table_args__ = (
+        PrimaryKeyConstraint("time", "symbol", "exchange", "timeframe"),
+    )
+
+class MarkPriceKline(Base):
+    __tablename__ = "mark_price_klines"
+
+    time = Column(DateTime(timezone=True), nullable=False)
+    symbol = Column(String, nullable=False)
+    exchange = Column(String, nullable=False)
+    timeframe = Column(String, nullable=False)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    
+    __table_args__ = (
+        PrimaryKeyConstraint("time", "symbol", "exchange", "timeframe"),
+    )
+
+class PremiumIndexKline(Base):
+    __tablename__ = "premium_index_klines"
+
+    time = Column(DateTime(timezone=True), nullable=False)
+    symbol = Column(String, nullable=False)
+    exchange = Column(String, nullable=False)
+    timeframe = Column(String, nullable=False)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    
+    __table_args__ = (
+        PrimaryKeyConstraint("time", "symbol", "exchange", "timeframe"),
     )

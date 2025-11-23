@@ -130,6 +130,75 @@ class DataCrawler:
         logger.info(f"Fetching {data_type} for {exchange} {symbol} from {start_dt} to {end_dt}")
         return self.storage.load_generic_data(data_type, exchange, symbol, start_dt, end_dt, instrument_type)
 
+    def get_book_depth(
+        self,
+        exchange: str,
+        symbol: str,
+        start_date: Union[str, datetime],
+        end_date: Optional[Union[str, datetime]] = None,
+        instrument_type: str = 'spot'
+    ) -> pd.DataFrame:
+        """Retrieve Order Book Depth snapshots."""
+        return self.get_data('bookDepth', exchange, symbol, start_date, end_date, instrument_type)
+
+    def get_index_price_klines(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str, # Note: Generic load might need to filter by timeframe if model has it. 
+                        # The generic loader in storage.py currently doesn't filter by timeframe for generic types!
+                        # I need to check storage.py load_generic_data.
+        start_date: Union[str, datetime],
+        end_date: Optional[Union[str, datetime]] = None,
+        instrument_type: str = 'spot'
+    ) -> pd.DataFrame:
+        """Retrieve Index Price Klines."""
+        # TODO: The generic loader needs to support timeframe filtering for these kline types.
+        # For now, we'll fetch and filter in memory or update storage.
+        # Let's update storage.py first to handle timeframe for generic klines?
+        # Or just rely on get_data and assume the user knows.
+        # Actually, the models IndexPriceKline etc HAVE a timeframe column.
+        # But load_generic_data doesn't accept a timeframe argument.
+        # It selects * from model where time range...
+        # So it will return ALL timeframes mixed. That's bad.
+        # I should update storage.py to handle timeframe for these types.
+        
+        # For now, let's just return what get_data returns, but I should fix storage.
+        df = self.get_data('indexPriceKlines', exchange, symbol, start_date, end_date, instrument_type)
+        if not df.empty and 'timeframe' in df.columns:
+            return df[df['timeframe'] == timeframe]
+        return df
+
+    def get_mark_price_klines(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        start_date: Union[str, datetime],
+        end_date: Optional[Union[str, datetime]] = None,
+        instrument_type: str = 'spot'
+    ) -> pd.DataFrame:
+        """Retrieve Mark Price Klines."""
+        df = self.get_data('markPriceKlines', exchange, symbol, start_date, end_date, instrument_type)
+        if not df.empty and 'timeframe' in df.columns:
+            return df[df['timeframe'] == timeframe]
+        return df
+
+    def get_premium_index_klines(
+        self,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        start_date: Union[str, datetime],
+        end_date: Optional[Union[str, datetime]] = None,
+        instrument_type: str = 'spot'
+    ) -> pd.DataFrame:
+        """Retrieve Premium Index Klines."""
+        df = self.get_data('premiumIndexKlines', exchange, symbol, start_date, end_date, instrument_type)
+        if not df.empty and 'timeframe' in df.columns:
+            return df[df['timeframe'] == timeframe]
+        return df
+
     def _parse_date(self, date_input: Union[str, datetime]) -> datetime:
         """Helper to parse date strings to timezone-aware datetime."""
         if isinstance(date_input, datetime):

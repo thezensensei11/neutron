@@ -92,6 +92,8 @@ class Downloader:
             storage=self.storage
         )
 
+        timeframe = params.get('timeframe')
+
         if not rewrite:
             check_end_date = end_date + timedelta(days=1)
             gaps = self.state_manager.get_gaps(
@@ -110,9 +112,9 @@ class Downloader:
             for gap_start, gap_end in gaps:
                 current_gap_end = gap_end - timedelta(days=1)
                 if current_gap_end < gap_start: current_gap_end = gap_start
-                service.backfill_range(symbol, gap_start, current_gap_end, data_type)
+                service.backfill_range(symbol, gap_start, current_gap_end, data_type, timeframe=timeframe)
         else:
-            service.backfill_range(symbol, start_date, end_date, data_type)
+            service.backfill_range(symbol, start_date, end_date, data_type, timeframe=timeframe)
 
     def _execute_single_task(self, task_type: str, task_params: Dict[str, Any]):
         """Execute a single task with given params (helper for parallelism)."""
@@ -125,12 +127,19 @@ class Downloader:
                 self._run_backfill_tick_data(task_params)
             elif task_type == 'backfill_funding':
                 self._run_backfill_funding(task_params)
-            elif task_type in ['backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation', 'backfill_metrics']:
+            elif task_type in [
+                'backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation', 'backfill_metrics',
+                'backfill_book_depth', 'backfill_index_price_klines', 'backfill_mark_price_klines', 'backfill_premium_index_klines'
+            ]:
                 data_type_map = {
                     'backfill_agg_trades': 'aggTrades',
                     'backfill_book_ticker': 'bookTicker',
                     'backfill_liquidation': 'liquidationSnapshot',
-                    'backfill_metrics': 'metrics'
+                    'backfill_metrics': 'metrics',
+                    'backfill_book_depth': 'bookDepth',
+                    'backfill_index_price_klines': 'indexPriceKlines',
+                    'backfill_mark_price_klines': 'markPriceKlines',
+                    'backfill_premium_index_klines': 'premiumIndexKlines'
                 }
                 self._run_backfill_generic(task_params, data_type_map[task_type])
             else:
@@ -140,18 +149,81 @@ class Downloader:
             raise
 
     def run(self):
+        """
+        Execute all tasks defined in the configuration.
+        
+        Execution Strategy:
+        -------------------
+        1. Phase 1: OHLCV Data (The Foundation)
+           - Priority: Stability & Completeness.
+           - Parallelism: Per-Exchange.
+           - Logic: We run different exchanges in parallel (e.g., Binance worker, Bitstamp worker), 
+             but within each exchange, we process symbols sequentially. This respects rate limits 
+             and ensures the core dataset is built reliably without gaps.
+             
+        2. Phase 2: Generic Data (High Frequency)
+           - Priority: Throughput & Speed.
+           - Parallelism: Global / Per-Job.
+           - Logic: We flatten all requests (e.g., BTC Trades, ETH BookTicker) into individual units 
+             of work and blast them through a shared worker pool. This maximizes bandwidth and CPU 
+             usage for massive datasets.
+        """
         logger.info(f"Starting Neutron Downloader with {len(self.config.tasks)} tasks.")
         
+        ohlcv_tasks = []
+        generic_tasks = []
+        
+        # 1. Categorize Tasks
         for task in self.config.tasks:
-            logger.info(f"Executing task: {task.type}")
+            if task.type == 'backfill_ohlcv':
+                ohlcv_tasks.append(task)
+            else:
+                generic_tasks.append(task)
+                
+        # ---------------------------------------------------------
+        # Phase 1: OHLCV Tasks (Parallel Exchanges, Sequential Symbols)
+        # ---------------------------------------------------------
+        if ohlcv_tasks:
+            logger.info(f"Phase 1: Processing {len(ohlcv_tasks)} OHLCV tasks.")
+            logger.info("Strategy: Parallel Exchanges, Sequential Symbols within Exchange.")
             
-            # Flatten params for each exchange/symbol if provided
-            # Flatten params for each exchange/symbol if provided
-            if task.exchanges:
-                # Use ThreadPoolExecutor for parallel exchange processing
-                max_workers = 5 # Adjust based on system capacity
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = []
+            # We use a separate executor for exchanges to ensure we don't overload connection pools
+            # Default to 5 concurrent exchanges if not specified, usually enough.
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = []
+                for task in ohlcv_tasks:
+                    if task.exchanges:
+                        for exchange_name, types in task.exchanges.items():
+                            # Submit the entire exchange workload as one job
+                            futures.append(executor.submit(
+                                self._process_exchange_sequentially, 
+                                exchange_name, 
+                                types, 
+                                task
+                            ))
+                    else:
+                        # Legacy single task
+                        futures.append(executor.submit(self._execute_single_task, task.type, task.params))
+                
+                # Wait for all exchanges to finish
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error(f"OHLCV Exchange Task failed: {e}")
+                
+        # ---------------------------------------------------------
+        # Phase 2: Generic Tasks (Fully Parallel)
+        # ---------------------------------------------------------
+        if generic_tasks:
+            max_workers = self.config.max_workers
+            logger.info(f"Phase 2: Processing {len(generic_tasks)} generic tasks.")
+            logger.info(f"Strategy: High-Throughput Parallelism (max_workers={max_workers}).")
+            
+            # Flatten generic tasks into individual units of work (per symbol)
+            work_items = []
+            for task in generic_tasks:
+                if task.exchanges:
                     for exchange_name, types in task.exchanges.items():
                         for instrument_type, params in types.items():
                             symbols = params.get('symbols', [])
@@ -162,39 +234,44 @@ class Downloader:
                                     'instrument_type': instrument_type,
                                     'symbol': symbol
                                 })
-                                
-                                # Submit task to executor
-                                futures.append(executor.submit(self._execute_single_task, task.type, task_params))
+                                work_items.append((task.type, task_params))
+                else:
+                    # Single task without exchanges block
+                    work_items.append((task.type, task.params))
+
+            if work_items:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [
+                        executor.submit(self._execute_single_task, t_type, t_params)
+                        for t_type, t_params in work_items
+                    ]
                     
-                    # Wait for all tasks to complete
                     for future in as_completed(futures):
                         try:
                             future.result()
                         except Exception as e:
-                            logger.error(f"Parallel task execution failed: {e}")
-            else:
-                # Single task execution (legacy or simple)
+                            logger.error(f"Generic Parallel Task failed: {e}")
+
+    def _process_exchange_sequentially(self, exchange_name: str, types: Dict[str, Any], task: Any):
+        """
+        Process all symbols for a single exchange sequentially.
+        Used in Phase 1 to maintain stability and respect exchange-level constraints.
+        """
+        logger.info(f"Starting sequential processing for exchange: {exchange_name}")
+        for instrument_type, params in types.items():
+            symbols = params.get('symbols', [])
+            for symbol in symbols:
+                task_params = task.params.copy()
+                task_params.update({
+                    'exchange': exchange_name,
+                    'instrument_type': instrument_type,
+                    'symbol': symbol
+                })
                 try:
-                    if task.type == 'sync_metadata':
-                        self._run_sync_metadata(task.params)
-                    elif task.type == 'backfill_ohlcv':
-                        self._run_backfill_ohlcv(task.params)
-                    elif task.type == 'backfill_tick_data':
-                        self._run_backfill_tick_data(task.params)
-                    elif task.type == 'backfill_funding':
-                        self._run_backfill_funding(task.params)
-                    elif task.type in ['backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation', 'backfill_metrics']:
-                        data_type_map = {
-                            'backfill_agg_trades': 'aggTrades',
-                            'backfill_book_ticker': 'bookTicker',
-                            'backfill_liquidation': 'liquidationSnapshot',
-                            'backfill_metrics': 'metrics'
-                        }
-                        self._run_backfill_generic(task.params, data_type_map[task.type])
-                    else:
-                        logger.warning(f"Unknown task type: {task.type}")
+                    self._execute_single_task(task.type, task_params)
                 except Exception as e:
-                    logger.error(f"Task {task.type} failed: {e}")
+                    logger.error(f"Failed processing {symbol} on {exchange_name}: {e}")
+        logger.info(f"Finished sequential processing for exchange: {exchange_name}")
 
     def _process_exchange_task(self, exchange_name: str, instruments: Dict[str, Any], task_type: str, global_params: Dict[str, Any]):
         """Process a single exchange's part of a task."""
@@ -399,21 +476,9 @@ class Downloader:
         self._run_backfill_generic(params, 'trades')
 
     def _run_backfill_funding(self, params: Dict[str, Any]):
-        symbol = params.get('symbol')
-        start_date = datetime.fromisoformat(params.get('start_date'))
-        exchange_name = params.get('exchange', 'binance')
-        instrument_type = params.get('instrument_type', 'swap') # Default to swap if not specified
-        
-        exchange = self._get_exchange(exchange_name, instrument_type)
-        rates = exchange.fetch_funding_rate_history(symbol, since=start_date)
-        
-        if rates:
-            # Inject instrument_type for Parquet storage
-            for r in rates:
-                r['instrument_type'] = instrument_type
-                
-            self.storage.save_funding_rates(rates)
-            logger.info(f"Backfilled {len(rates)} funding rates for {symbol}")
+        # Use generic backfill with 'fundingRate' type
+        # This leverages Binance Vision files instead of API
+        self._run_backfill_generic(params, 'fundingRate')
 
 if __name__ == "__main__":
     import sys

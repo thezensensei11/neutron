@@ -21,6 +21,7 @@ class NeutronConfig:
     tasks: List[TaskConfig]
     data_state_path: str = "data_state.json"
     exchange_state_path: str = "exchange_state.json"
+    max_workers: int = 1
 
 class ConfigLoader:
     @staticmethod
@@ -58,5 +59,6 @@ class ConfigLoader:
             storage=storage_config,
             tasks=tasks,
             data_state_path=data.get('data_state_path', 'data_state.json'),
-            exchange_state_path=data.get('exchange_state_path', 'exchange_state.json')
+            exchange_state_path=data.get('exchange_state_path', 'exchange_state.json'),
+            max_workers=data.get('max_workers', 1)
         )
