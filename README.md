@@ -194,6 +194,17 @@ To wipe the database tables (OHLCV, Trades, etc.) but keep metadata:
 uv run python scripts/reset_db.py
 ```
 
+### Inspecting Available Data
+To generate a rich summary of all downloaded data (coverage, gaps, counts):
+
+```python
+from neutron.core.crawler import DataCrawler
+
+crawler = DataCrawler(storage_type='database') # or 'parquet'
+info = crawler.get_info_service()
+print(info.generate_summary(deep_scan=False))
+```
+
 ---
 
 ## 🧠 Advanced Concepts

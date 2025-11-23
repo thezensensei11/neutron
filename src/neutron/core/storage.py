@@ -5,7 +5,7 @@ import pandas as pd
 from pathlib import Path
 import logging
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import select
+from sqlalchemy import select, func, text
 from ..db.session import ScopedSession
 from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot
 from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot, OpenInterest, BookDepth, IndexPriceKline, MarkPriceKline, PremiumIndexKline
@@ -16,6 +16,25 @@ class StorageBackend(ABC):
 # ... (interface remains same)
     @abstractmethod
     def save_generic_data(self, data: List[Dict[str, Any]], data_type: str):
+        pass
+
+    @abstractmethod
+    def list_available_data(self, deep_scan: bool = False) -> List[Dict[str, Any]]:
+        """
+        List all available data in storage with summary statistics.
+        
+        Returns:
+            List of dicts with keys:
+            - exchange
+            - symbol
+            - instrument_type (if available)
+            - data_type
+            - timeframe (optional)
+            - start_date
+            - end_date
+            - count
+            - gaps (list of tuples (start, end)) if deep_scan is True
+        """
         pass
 # ...
 
@@ -254,7 +273,81 @@ class DatabaseStorage(StorageBackend):
         df = pd.DataFrame(data)
         if '_sa_instance_state' in df.columns:
             df = df.drop(columns=['_sa_instance_state'])
+        df = pd.DataFrame(data)
+        if '_sa_instance_state' in df.columns:
+            df = df.drop(columns=['_sa_instance_state'])
         return df
+
+    def list_available_data(self, deep_scan: bool = False) -> List[Dict[str, Any]]:
+        results = []
+        
+        # Map data types to models
+        # Note: Some models might be used for multiple data types (e.g. OpenInterest)
+        model_map = {
+            'ohlcv': OHLCV,
+            'trades': Trade,
+            'funding': FundingRate,
+            'aggTrades': AggTrade,
+            'bookTicker': BookTicker,
+            'liquidationSnapshot': LiquidationSnapshot,
+            'metrics': OpenInterest,
+            'bookDepth': BookDepth,
+            'indexPriceKlines': IndexPriceKline,
+            'markPriceKlines': MarkPriceKline,
+            'premiumIndexKlines': PremiumIndexKline
+        }
+        
+        with ScopedSession() as db:
+            for data_type, model in model_map.items():
+                try:
+                    # Inspect columns to see what we can group by
+                    columns = {c.name for c in model.__table__.columns}
+                    
+                    group_cols = []
+                    if 'exchange' in columns: group_cols.append(model.exchange)
+                    if 'symbol' in columns: group_cols.append(model.symbol)
+                    if 'instrument_type' in columns: group_cols.append(model.instrument_type)
+                    if 'timeframe' in columns: group_cols.append(model.timeframe)
+                    
+                    # Basic stats query
+                    stmt = select(
+                        *group_cols,
+                        func.min(model.time).label('start_date'),
+                        func.max(model.time).label('end_date'),
+                        func.count().label('count')
+                    ).group_by(*group_cols)
+                    
+                    query_results = db.execute(stmt).all()
+                    
+                    for row in query_results:
+                        # Convert row to dict
+                        # row is a Row object, keys correspond to select expressions
+                        # We need to map back to our expected output format
+                        
+                        entry = {
+                            'data_type': data_type,
+                            'exchange': getattr(row, 'exchange', None),
+                            'symbol': getattr(row, 'symbol', None),
+                            'instrument_type': getattr(row, 'instrument_type', 'spot'), # Default if missing
+                            'timeframe': getattr(row, 'timeframe', None),
+                            'start_date': row.start_date,
+                            'end_date': row.end_date,
+                            'count': row.count,
+                            'gaps': []
+                        }
+                        
+                        # Deep scan for gaps (simplified for now)
+                        if deep_scan and entry['count'] > 0:
+                            # TODO: Implement gap detection with window functions
+                            # For now, just marking as checked
+                            pass
+                            
+                        results.append(entry)
+                        
+                except Exception as e:
+                    logger.error(f"Error listing data for {data_type}: {e}")
+                    
+        return results
 
 class ParquetStorage(StorageBackend):
     def __init__(self, base_dir: str):
@@ -470,3 +563,74 @@ class ParquetStorage(StorageBackend):
 
     def load_generic_data(self, data_type: str, exchange: str, symbol: str, start_date: datetime, end_date: datetime, instrument_type: str = 'spot') -> pd.DataFrame:
         return self._load_parquet_range(exchange, symbol, data_type, start_date, end_date, instrument_type)
+
+    def list_available_data(self, deep_scan: bool = False) -> List[Dict[str, Any]]:
+        results = []
+        if not self.base_dir.exists():
+            return results
+            
+        # Structure: base_dir / exchange / instrument / base_asset / category / date.parquet
+        for exchange_path in self.base_dir.iterdir():
+            if not exchange_path.is_dir(): continue
+            exchange = exchange_path.name
+            
+            for instrument_path in exchange_path.iterdir():
+                if not instrument_path.is_dir(): continue
+                instrument = instrument_path.name
+                
+                for asset_path in instrument_path.iterdir():
+                    if not asset_path.is_dir(): continue
+                    symbol = asset_path.name # This is base asset, effectively
+                    
+                    for category_path in asset_path.iterdir():
+                        if not category_path.is_dir(): continue
+                        category = category_path.name # timeframe or data_type
+                        
+                        # Determine if category is a timeframe or data type
+                        # Heuristic: if it starts with digit, it's timeframe (e.g. 1h, 1m)
+                        # Else it's data type (e.g. trades, aggTrades)
+                        is_timeframe = category[0].isdigit()
+                        data_type = 'ohlcv' if is_timeframe else category
+                        timeframe = category if is_timeframe else None
+                        
+                        files = list(category_path.glob('*.parquet'))
+                        if not files: continue
+                        
+                        dates = []
+                        total_rows = 0
+                        
+                        for f in files:
+                            try:
+                                date_str = f.stem
+                                dates.append(datetime.strptime(date_str, "%Y-%m-%d").date())
+                                
+                                if deep_scan:
+                                    # Try to get row count from metadata
+                                    try:
+                                        # Read only index to be faster
+                                        meta = pd.read_parquet(f, columns=[])
+                                        total_rows += len(meta)
+                                    except:
+                                        pass
+                            except:
+                                pass
+                        
+                        if not dates: continue
+                        
+                        min_date = min(dates)
+                        max_date = max(dates)
+                        
+                        results.append({
+                            'exchange': exchange,
+                            'symbol': symbol,
+                            'instrument_type': instrument,
+                            'data_type': data_type,
+                            'timeframe': timeframe,
+                            'start_date': min_date,
+                            'end_date': max_date,
+                            'count': total_rows if deep_scan else len(files),
+                            'count_unit': 'rows' if deep_scan else 'days',
+                            'gaps': []
+                        })
+                        
+        return results

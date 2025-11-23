@@ -218,3 +218,8 @@ class DataCrawler:
                 return dt.replace(tzinfo=timezone.utc)
             except ValueError:
                 raise ValueError(f"Could not parse date: {date_input}")
+
+    def get_info_service(self):
+        """Get the InfoService for summarizing storage."""
+        from ..services.info_service import InfoService
+        return InfoService(self.storage)
