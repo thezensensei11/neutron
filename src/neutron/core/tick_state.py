@@ -7,14 +7,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class DataStateManager:
+class TickDataStateManager:
     """
-    Manages the state of downloaded data to avoid redundant downloads.
+    Manages the state of downloaded tick/generic data.
+    Hierarchy: exchange -> instrument -> symbol -> data_type -> timeframe -> ranges
     Persists state to a JSON file.
     Thread-safe.
     """
 
-    def __init__(self, state_file: str = "data_state.json"):
+    def __init__(self, state_file: str = "tick_data_state.json"):
         self.state_file = state_file
         self._lock = threading.Lock()
         self.state = self._load_state()
@@ -30,20 +31,6 @@ class DataStateManager:
                     return {}
             return {}
 
-    def _save_state(self):
-        # Lock should be held by caller or we lock here? 
-        # Better to lock here to be safe, but if called from update_state which locks, we need RLock.
-        # Let's use RLock or just lock in public methods.
-        # Actually, let's make _save_state internal and assume caller holds lock if needed, 
-        # OR just lock inside. Since update_state calls it, we need to be careful.
-        # Simplest: Use RLock.
-        pass 
-
-    def save(self):
-        """Public save method."""
-        with self._lock:
-            self._save_state_internal()
-
     def _save_state_internal(self):
         try:
             # Create a temporary file first to avoid corruption
@@ -51,7 +38,7 @@ class DataStateManager:
             with open(temp_file, 'w') as f:
                 json.dump(self.state, f, indent=2)
             os.replace(temp_file, self.state_file)
-            logger.info(f"Saved state to {self.state_file} with keys: {list(self.state.keys())}")
+            logger.info(f"Saved tick state to {self.state_file}")
         except Exception as e:
             logger.error(f"Failed to save state file {self.state_file}: {e}")
 
@@ -60,13 +47,13 @@ class DataStateManager:
         exchange: str, 
         instrument_type: str, 
         symbol: str, 
+        data_type: str,
         timeframe: str, 
         start_date: datetime, 
         end_date: datetime
     ) -> List[Tuple[datetime, datetime]]:
         """
         Calculate the gaps (missing data ranges) for the requested period.
-        Returns a list of (start, end) tuples that need to be downloaded.
         """
         # Ensure dates are UTC aware
         if start_date.tzinfo is None:
@@ -76,9 +63,9 @@ class DataStateManager:
 
         with self._lock:
             # Get existing ranges
-            ranges = self.state.get(exchange, {}).get(instrument_type, {}).get(symbol, {}).get(timeframe, [])
+            # exchange -> instrument -> symbol -> data_type -> timeframe
+            ranges = self.state.get(exchange, {}).get(instrument_type, {}).get(symbol, {}).get(data_type, {}).get(timeframe, [])
             
-            # Convert stored strings back to datetime objects
             existing_intervals = []
             for r in ranges:
                 s = datetime.fromisoformat(r[0])
@@ -87,31 +74,21 @@ class DataStateManager:
                 if e.tzinfo is None: e = e.replace(tzinfo=timezone.utc)
                 existing_intervals.append((s, e))
 
-        # Sort intervals by start time
         existing_intervals.sort(key=lambda x: x[0])
 
         gaps = []
         current_start = start_date
 
         for exist_start, exist_end in existing_intervals:
-            # If current_start is beyond the requested end_date, we are done
             if current_start >= end_date:
                 break
-
-            # If existing interval ends before current_start, it's irrelevant
             if exist_end <= current_start:
                 continue
-
-            # If existing interval starts after current_start, we have a gap
             if exist_start > current_start:
-                # Gap from current_start to exist_start (clamped by end_date)
                 gap_end = min(exist_start, end_date)
                 gaps.append((current_start, gap_end))
-            
-            # Move current_start to the end of this existing interval
             current_start = max(current_start, exist_end)
 
-        # If there is still time left after the last interval
         if current_start < end_date:
             gaps.append((current_start, end_date))
 
@@ -122,39 +99,38 @@ class DataStateManager:
         exchange: str, 
         instrument_type: str, 
         symbol: str, 
+        data_type: str,
         timeframe: str, 
         start_date: datetime, 
         end_date: datetime
     ):
         """
         Update the state with a newly downloaded range.
-        Automatically merges overlapping or adjacent ranges.
         """
+        if start_date.tzinfo is None:
+            start_date = start_date.replace(tzinfo=timezone.utc)
         if end_date.tzinfo is None:
             end_date = end_date.replace(tzinfo=timezone.utc)
 
-        logger.info(f"Updating state for {exchange} {instrument_type} {symbol} {timeframe}: {start_date} - {end_date}")
+        logger.info(f"Updating tick state for {exchange} {instrument_type} {symbol} {data_type} {timeframe}: {start_date} - {end_date}")
 
         with self._lock:
-            # Reload state to ensure we have latest from disk (robustness for multi-process)
+            # Reload state from disk
             try:
                 if os.path.exists(self.state_file):
                     with open(self.state_file, 'r') as f:
-                        disk_state = json.load(f)
-                        # We should merge disk state with current state, or just use disk state?
-                        # Since we save immediately after every update, disk state should be the source of truth.
-                        self.state = disk_state
+                        self.state = json.load(f)
             except Exception as e:
-                logger.error(f"Failed to reload state in update_state: {e}")
-            
-            # Initialize structure if missing
+                logger.error(f"Failed to reload tick state: {e}")
+
+            # Initialize structure
             if exchange not in self.state: self.state[exchange] = {}
             if instrument_type not in self.state[exchange]: self.state[exchange][instrument_type] = {}
             if symbol not in self.state[exchange][instrument_type]: self.state[exchange][instrument_type][symbol] = {}
-            if timeframe not in self.state[exchange][instrument_type][symbol]: self.state[exchange][instrument_type][symbol][timeframe] = []
+            if data_type not in self.state[exchange][instrument_type][symbol]: self.state[exchange][instrument_type][symbol][data_type] = {}
+            if timeframe not in self.state[exchange][instrument_type][symbol][data_type]: self.state[exchange][instrument_type][symbol][data_type][timeframe] = []
 
-            # Get existing ranges
-            ranges = self.state[exchange][instrument_type][symbol][timeframe]
+            ranges = self.state[exchange][instrument_type][symbol][data_type][timeframe]
             intervals = []
             for r in ranges:
                 s = datetime.fromisoformat(r[0])
@@ -163,10 +139,7 @@ class DataStateManager:
                 if e.tzinfo is None: e = e.replace(tzinfo=timezone.utc)
                 intervals.append((s, e))
             
-            # Add new range
             intervals.append((start_date, end_date))
-            
-            # Sort and merge
             intervals.sort(key=lambda x: x[0])
             
             merged = []
@@ -174,17 +147,13 @@ class DataStateManager:
                 curr_start, curr_end = intervals[0]
                 for next_start, next_end in intervals[1:]:
                     if next_start <= curr_end:
-                        # Overlap or adjacent, merge
                         curr_end = max(curr_end, next_end)
                     else:
-                        # No overlap, push current and start new
                         merged.append((curr_start, curr_end))
                         curr_start, curr_end = next_start, next_end
                 merged.append((curr_start, curr_end))
 
-            # Serialize back to strings
             new_ranges = [[s.isoformat(), e.isoformat()] for s, e in merged]
-            self.state[exchange][instrument_type][symbol][timeframe] = new_ranges
+            self.state[exchange][instrument_type][symbol][data_type][timeframe] = new_ranges
             
             self._save_state_internal()
-

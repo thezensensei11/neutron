@@ -315,7 +315,7 @@ class DatabaseStorage(StorageBackend):
                         func.min(model.time).label('start_date'),
                         func.max(model.time).label('end_date'),
                         func.count().label('count'),
-                        func.sum(case((model.is_interpolated == True, 1), else_=0)).label('interpolated_count') if hasattr(model, 'is_interpolated') else text("0").label('interpolated_count')
+                        func.sum(case((model.is_interpolated == True, 1), else_=0)).label('interpolated_count') if 'is_interpolated' in columns else text("0").label('interpolated_count')
                     ).group_by(*group_cols)
                     
                     query_results = db.execute(stmt).all()

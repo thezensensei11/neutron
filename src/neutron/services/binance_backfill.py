@@ -4,7 +4,7 @@ from typing import Optional
 
 from ..data_source.binance_vision import BinanceVisionDownloader
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("tick_monitor")
 
 class BinanceBackfillService:
     def __init__(self, download_dir: str = "data/downloads", state_manager=None, exchange_name="binance", instrument_type="spot", storage=None):
@@ -31,7 +31,7 @@ class BinanceBackfillService:
         logger.info(f"Starting {data_type} backfill for {symbol} from {start_date.date()} to {end_date.date()}")
         
         current_date = start_date
-        while current_date <= end_date:
+        while current_date < end_date:
             try:
                 data = self.downloader.download_daily_data(
                     symbol=symbol, 
@@ -93,7 +93,9 @@ class BinanceBackfillService:
                             # The state manager marks the *day*. 
                             # If we are doing sub-daily backfills, our state management (daily resolution) is imperfect.
                             # But for this specific user request (manageable data), filtering is key.
-                            pass
+                            # If filtering was performed, we must update 'data' to reflect the filtered result
+                            # even if it is empty.
+                            data = filtered_data
                         else:
                             data = filtered_data
                             logger.info(f"Filtered {len(data)} records for {symbol} in range {start_date} - {end_date}")
@@ -108,11 +110,15 @@ class BinanceBackfillService:
                     # Update state only if data was found
                     if self.state_manager:
                         day_end = current_date + timedelta(days=1)
+                        # Use provided timeframe or default to 'raw' if None
+                        tf = timeframe if timeframe else 'raw'
+                        
                         self.state_manager.update_state(
                             exchange=self.exchange_name,
                             instrument_type=self.instrument_type,
                             symbol=symbol,
-                            timeframe=data_type, # Use data_type as timeframe identifier
+                            data_type=data_type,
+                            timeframe=tf,
                             start_date=current_date,
                             end_date=day_end
                         )

@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import NeutronConfig, ConfigLoader
 from .state import DataStateManager
+from .tick_state import TickDataStateManager
 from .storage import StorageBackend, DatabaseStorage, ParquetStorage
 from ..db.session import engine
 from ..services.metadata_sync import MetadataService
@@ -30,6 +31,7 @@ class Downloader:
         
         # Initialize State Managers with configured paths
         self.state_manager = DataStateManager(state_file=self.config.data_state_path)
+        self.tick_state_manager = TickDataStateManager(state_file=self.config.tick_data_state_path)
         
         # ExchangeStateManager is a singleton, so we initialize it here to ensure path is set if first time
         from .exchange_state import ExchangeStateManager
@@ -53,6 +55,7 @@ class Downloader:
             logger.info("Using Database storage")
             
         self._setup_data_logger()
+        self._setup_tick_logger()
 
     def _setup_data_logger(self):
         """Setup the data monitor logger globally."""
@@ -73,6 +76,23 @@ class Downloader:
             fh.setFormatter(formatter)
             data_logger.addHandler(fh)
 
+    def _setup_tick_logger(self):
+        """Setup the tick data logger."""
+        tick_logger = logging.getLogger("tick_monitor")
+        tick_logger.setLevel(logging.INFO)
+        tick_logger.propagate = False
+        
+        has_file_handler = any(isinstance(h, logging.FileHandler) and h.baseFilename.endswith("tickdata.log") for h in tick_logger.handlers)
+        
+        if not has_file_handler:
+            for h in tick_logger.handlers:
+                tick_logger.removeHandler(h)
+                
+            fh = logging.FileHandler("tickdata.log")
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            fh.setFormatter(formatter)
+            tick_logger.addHandler(fh)
+
     def _run_backfill_generic(self, params: Dict[str, Any], data_type: str):
         symbol = params.get('symbol')
         start_date = datetime.fromisoformat(params.get('start_date'))
@@ -86,21 +106,22 @@ class Downloader:
         if end_date.tzinfo is None: end_date = end_date.replace(tzinfo=timezone.utc)
 
         service = BinanceBackfillService(
-            state_manager=self.state_manager,
+            state_manager=self.tick_state_manager,
             exchange_name=exchange_name,
             instrument_type=instrument_type,
             storage=self.storage
         )
 
-        timeframe = params.get('timeframe')
+        timeframe = params.get('timeframe', 'raw') # Default to 'raw' if no timeframe
 
         if not rewrite:
             check_end_date = end_date + timedelta(days=1)
-            gaps = self.state_manager.get_gaps(
+            gaps = self.tick_state_manager.get_gaps(
                 exchange_name, 
                 instrument_type, 
                 symbol, 
-                data_type, 
+                data_type,
+                timeframe, 
                 start_date, 
                 check_end_date
             )

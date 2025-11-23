@@ -20,6 +20,7 @@ class NeutronConfig:
     storage: StorageConfig
     tasks: List[TaskConfig]
     data_state_path: str = "data_state.json"
+    tick_data_state_path: str = "tick_data_state.json"
     exchange_state_path: str = "exchange_state.json"
     max_workers: int = 1
 
@@ -59,6 +60,7 @@ class ConfigLoader:
             storage=storage_config,
             tasks=tasks,
             data_state_path=data.get('data_state_path', 'data_state.json'),
+            tick_data_state_path=data.get('tick_data_state_path', 'tick_data_state.json'),
             exchange_state_path=data.get('exchange_state_path', 'exchange_state.json'),
             max_workers=data.get('max_workers', 1)
         )
