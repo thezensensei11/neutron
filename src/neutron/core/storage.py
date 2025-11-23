@@ -185,6 +185,17 @@ class DatabaseStorage(StorageBackend):
                 
                 transformed_data.append(new_d)
             data = transformed_data
+        
+        # Map open_time to time for Klines
+        # This is necessary because Binance Vision CSVs use 'open_time' but our DB models use 'time' as the primary key
+        if data_type in ['markPriceKlines', 'indexPriceKlines', 'premiumIndexKlines']:
+            transformed_data = []
+            for d in data:
+                new_d = d.copy()
+                if 'open_time' in new_d and 'time' not in new_d:
+                    new_d['time'] = new_d['open_time']
+                transformed_data.append(new_d)
+            data = transformed_data
 
         clean_data = self._filter_data(data, model_class)
         

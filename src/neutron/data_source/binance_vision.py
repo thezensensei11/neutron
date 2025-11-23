@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from ..db.models import Trade
 from ..db.session import ScopedSession
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +57,18 @@ class BinanceVisionDownloader:
         },
         "markPriceKlines": {
             "path": "markPriceKlines",
-            "headers": ["open_time", "open", "high", "low", "close", "ignore", "ignore", "ignore", "count", "ignore", "ignore", "ignore"],
+            "headers": ["open_time", "open", "high", "low", "close", "ignore_1", "ignore_2", "ignore_3", "count", "ignore_4", "ignore_5", "ignore_6"],
             "time_col": "open_time"
         },
         "indexPriceKlines": {
             "path": "indexPriceKlines",
-            "headers": ["open_time", "open", "high", "low", "close", "ignore", "ignore", "ignore", "count", "ignore", "ignore", "ignore"],
+            "headers": ["open_time", "open", "high", "low", "close", "ignore_1", "ignore_2", "ignore_3", "count", "ignore_4", "ignore_5", "ignore_6"],
             "time_col": "open_time"
         },
         "premiumIndexKlines": {
             "path": "premiumIndexKlines",
-            "headers": ["open_time", "open", "high", "low", "close", "ignore", "ignore", "ignore", "count", "ignore", "ignore", "ignore"],
+            # Note: 'ignore' columns are renamed to ensure uniqueness for pandas DataFrame creation
+            "headers": ["open_time", "open", "high", "low", "close", "ignore_1", "ignore_2", "ignore_3", "count", "ignore_4", "ignore_5", "ignore_6"],
             "time_col": "open_time"
         }
     }
@@ -155,14 +157,39 @@ class BinanceVisionDownloader:
                 with z.open(csv_filename) as f:
                     df = pd.read_csv(f, header=None, names=headers)
             
+            # Check if the first row is actually the header
+            if not df.empty and config and "time_col" in config:
+                time_col = config["time_col"]
+                first_val = df.iloc[0][time_col]
+                
+                is_header = False
+                # Check if it matches known header names
+                if str(first_val) in [time_col, "time", "transactTime", "openTime", "t", "T"]:
+                    is_header = True
+                # Check if it's a string that is NOT numeric
+                # This handles cases where the header row is present but doesn't match the expected column name exactly
+                elif isinstance(first_val, str) and not first_val.replace('.','',1).isdigit():
+                    is_header = True
+                    
+                if is_header:
+                     logger.info(f"Detected header row in {data_type} for {symbol}, dropping it.")
+                     df = df.iloc[1:].reset_index(drop=True)
+                     # Convert time column to numeric since it was likely inferred as object due to the header string
+                     try:
+                         df[time_col] = pd.to_numeric(df[time_col])
+                     except Exception as e:
+                         logger.warning(f"Failed to convert {time_col} to numeric: {e}")
+
             # Post-processing
             if config and "time_col" in config:
                 time_col = config["time_col"]
                 if time_col in df.columns and not df.empty:
-                    # Heuristic for timestamp unit
+                    # Heuristic for timestamp unit detection
+                    # We check the magnitude of the timestamp to determine if it's in seconds, milliseconds, or microseconds
                     sample_ts = df[time_col].iloc[0]
                     
-                    if isinstance(sample_ts, (int, float)):
+                    # Check for numeric types, including numpy types (e.g. np.int64) which are common in pandas
+                    if isinstance(sample_ts, (int, float, np.number)):
                         if sample_ts > 1e14: # Microseconds
                             df[time_col] = pd.to_datetime(df[time_col], unit='us')
                         elif sample_ts > 1e11: # Milliseconds
@@ -170,12 +197,30 @@ class BinanceVisionDownloader:
                         else: # Seconds
                             df[time_col] = pd.to_datetime(df[time_col], unit='s')
                     else:
-                        # Assume string or already datetime
-                        df[time_col] = pd.to_datetime(df[time_col])
+                        # Check if string is numeric (e.g. "1731628800000")
+                        if isinstance(sample_ts, str) and sample_ts.replace('.','',1).isdigit():
+                            try:
+                                df[time_col] = pd.to_numeric(df[time_col])
+                                # Re-evaluate sample_ts
+                                sample_ts = df[time_col].iloc[0]
+                                if sample_ts > 1e14: # Microseconds
+                                    df[time_col] = pd.to_datetime(df[time_col], unit='us')
+                                elif sample_ts > 1e11: # Milliseconds
+                                    df[time_col] = pd.to_datetime(df[time_col], unit='ms')
+                                else: # Seconds
+                                    df[time_col] = pd.to_datetime(df[time_col], unit='s')
+                            except:
+                                # Fallback
+                                df[time_col] = pd.to_datetime(df[time_col])
+                        else:
+                            # Assume string date or already datetime
+                            df[time_col] = pd.to_datetime(df[time_col])
             
             df['symbol'] = symbol
             df['exchange'] = 'binance'
             df['instrument_type'] = instrument_type
+            if timeframe:
+                df['timeframe'] = timeframe
             
             return df.to_dict('records')
 

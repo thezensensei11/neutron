@@ -26,6 +26,9 @@ Supports ingestion of various market data primitives:
 - **Funding Rates**: Historical funding rate history for perpetual swaps.
 - **Liquidation Snapshots**: Rekt / liquidation events.
 - **Order Book Tickers**: Best bid/ask snapshots.
+- **Metrics**: Open Interest, Long/Short Ratios.
+- **Advanced Klines**: Mark Price, Index Price, Premium Index Klines.
+- **Book Depth**: Order book depth snapshots.
 
 ### 3. Dual Storage Backends
 Flexible storage options to suit your infrastructure:
@@ -159,6 +162,10 @@ Neutron is driven by a JSON configuration file (e.g., `config.json`). This file 
 | `backfill_funding` | Downloads funding rate history (swaps only). | `start_date`, `end_date` |
 | `backfill_agg_trades` | Downloads aggregated trades. | `start_date`, `end_date` |
 | `backfill_liquidation`| Downloads liquidation events. | `start_date`, `end_date` |
+| `backfill_metrics` | Downloads market metrics (Open Interest, etc.). | `start_date`, `end_date` |
+| `backfill_mark_price_klines` | Downloads Mark Price Klines. | `timeframe`, `start_date`, `end_date` |
+| `backfill_index_price_klines` | Downloads Index Price Klines. | `timeframe`, `start_date`, `end_date` |
+| `backfill_premium_index_klines` | Downloads Premium Index Klines. | `timeframe`, `start_date`, `end_date` |
 
 ---
 

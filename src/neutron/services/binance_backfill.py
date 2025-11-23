@@ -17,6 +17,16 @@ class BinanceBackfillService:
     def backfill_range(self, symbol: str, start_date: datetime, end_date: datetime, data_type: str, timeframe: str = None):
         """
         Backfill generic data for a symbol over a range of dates.
+        
+        This method downloads daily data files, filters them to the specific time range requested
+        (down to the millisecond), and saves the result to the configured storage.
+        
+        Args:
+            symbol: The trading symbol (e.g., 'BTC/USDT')
+            start_date: Start datetime (inclusive)
+            end_date: End datetime (exclusive)
+            data_type: Type of data to backfill (e.g., 'trades', 'aggTrades', 'metrics')
+            timeframe: Optional timeframe for kline data (e.g., '1h')
         """
         logger.info(f"Starting {data_type} backfill for {symbol} from {start_date.date()} to {end_date.date()}")
         
