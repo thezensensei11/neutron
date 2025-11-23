@@ -47,6 +47,38 @@ class OHLCVBackfillService:
         logger.info(msg)
         self.data_logger.info(msg)
 
+        # Determine gaps to fill
+        gaps_to_fill = [(start_date, end_date)]
+        if self.state_manager:
+            gaps_to_fill = self.state_manager.get_gaps(
+                exchange=exch_id,
+                instrument_type=instrument_type,
+                symbol=symbol,
+                timeframe=timeframe,
+                start_date=start_date,
+                end_date=end_date
+            )
+            if not gaps_to_fill:
+                msg = f"[{exch_id}] No gaps found for {symbol} {timeframe}. Data already exists."
+                logger.info(msg)
+                self.data_logger.info(msg)
+                return
+
+        total_candles = 0
+        start_time = time.time()
+        
+        for gap_start, gap_end in gaps_to_fill:
+            logger.info(f"[{exch_id}] Filling gap for {symbol}: {gap_start} -> {gap_end}")
+            self._backfill_range(symbol, timeframe, gap_start, gap_end, instrument_type, exch_id)
+            
+        duration = time.time() - start_time
+        # Note: total_candles is not tracked across gaps easily without refactoring _backfill_range to return count
+        # For now, we'll just log completion.
+        summary = f"[{exch_id}] Backfill complete for {symbol}."
+        logger.info(summary)
+        self.data_logger.info(summary)
+
+    def _backfill_range(self, symbol, timeframe, start_date, end_date, instrument_type, exch_id):
         current_since = start_date
         total_candles = 0
         start_time = time.time()
@@ -62,6 +94,13 @@ class OHLCVBackfillService:
                 if not candles:
                     self.data_logger.info(f"[{exch_id}] No more data for {symbol} after {current_since}")
                     break
+                
+                # Filter candles beyond end_date
+                if end_date:
+                    candles = [c for c in candles if c['time'] < end_date]
+                    if not candles:
+                        self.data_logger.info(f"[{exch_id}] Reached end date {end_date} for {symbol}")
+                        break
                 
                 # Adjust start_date based on actual data received (if this is the first batch)
                 if total_candles == 0:
@@ -122,15 +161,15 @@ class OHLCVBackfillService:
                 # Update current_since to the timestamp of the last candle + 1ms
                 current_since = last_candle_time + timedelta(milliseconds=1)
                 
-                # Periodic State Update (every 10 batches)
-                if batch_count % 10 == 0 and self.state_manager:
+                # Update state after every batch for robustness
+                if self.state_manager:
                     self.state_manager.update_state(
                         exchange=exch_id,
                         instrument_type=instrument_type,
                         symbol=symbol,
                         timeframe=timeframe,
                         start_date=start_date,
-                        end_date=current_since # Update up to where we are now
+                        end_date=min(current_since, end_date) # Update up to where we are now, clamped
                     )
                 
                 if current_since >= end_date:
@@ -145,7 +184,7 @@ class OHLCVBackfillService:
 
         duration = time.time() - start_time
         avg_speed = total_candles / duration if duration > 0 else 0
-        summary = f"[{exch_id}] Backfill complete for {symbol}. Total: {total_candles}. Avg Speed: {avg_speed:.1f} candles/s"
+        summary = f"[{exch_id}] Range backfill complete for {symbol}. Total: {total_candles}. Avg Speed: {avg_speed:.1f} candles/s"
         logger.info(summary)
         self.data_logger.info(summary)
         

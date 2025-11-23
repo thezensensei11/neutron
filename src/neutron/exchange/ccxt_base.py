@@ -69,6 +69,10 @@ class CCXTExchange(Exchange):
             data = []
             for candle in ohlcv:
                 # CCXT returns [timestamp, open, high, low, close, volume]
+                # Ensure essential price data is present
+                if any(x is None for x in candle[1:5]):
+                    continue
+                    
                 data.append({
                     'time': datetime.fromtimestamp(candle[0] / 1000, tz=timezone.utc),
                     'symbol': symbol,
@@ -78,7 +82,7 @@ class CCXTExchange(Exchange):
                     'high': float(candle[2]),
                     'low': float(candle[3]),
                     'close': float(candle[4]),
-                    'volume': float(candle[5])
+                    'volume': float(candle[5]) if candle[5] is not None else 0.0
                 })
             return data
             

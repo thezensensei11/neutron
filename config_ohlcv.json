@@ -1,4 +1,7 @@
 {
+    "data_state_path": "data_state.json",
+    "exchange_state_path": "exchange_state.json",
+    "max_workers": 8,
     "storage": {
         "type": "database"
     },
@@ -10,10 +13,9 @@
         {
             "type": "backfill_ohlcv",
             "params": {
-                "timeframe": "1h",
+                "timeframe": "1m",
                 "start_date": "2010-01-01T00:00:00",
-                "end_date": "2025-11-23T00:00:00",
-                "rewrite": true
+                "end_date": "2025-11-23T00:00:00"
             },
             "exchanges": {
                 "binance": {
@@ -29,13 +31,6 @@
                     }
                 },
                 "bitstamp": {
-                    "spot": {
-                        "symbols": [
-                            "BTC/USD"
-                        ]
-                    }
-                },
-                "bitfinex": {
                     "spot": {
                         "symbols": [
                             "BTC/USD"
@@ -61,10 +56,10 @@
                         ]
                     }
                 },
-                "hyperliquid": {
+                "bitmex": {
                     "swap": {
                         "symbols": [
-                            "BTC/USDC"
+                            "BTC/USD:BTC"
                         ]
                     }
                 }

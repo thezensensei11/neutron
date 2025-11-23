@@ -41,6 +41,8 @@ class OHLCV(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='spot')
+    is_interpolated = Column(Boolean, default=False)
     timeframe = Column(String, nullable=False)  # e.g., "1m", "1h"
     open = Column(Float, nullable=False)
     high = Column(Float, nullable=False)
@@ -59,6 +61,7 @@ class Trade(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='spot')
     trade_id = Column(String, nullable=False)
     price = Column(Float, nullable=False)
     amount = Column(Float, nullable=False)
@@ -76,6 +79,7 @@ class FundingRate(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='swap')
     rate = Column(Float, nullable=False)
     mark_price = Column(Float)
     
@@ -89,6 +93,7 @@ class OpenInterest(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='swap')
     value = Column(Float, nullable=False) # The open interest amount (in contracts or base asset depending on exchange)
     
     __table_args__ = (
@@ -101,6 +106,7 @@ class AggTrade(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='spot')
     agg_trade_id = Column(String, nullable=False)
     price = Column(Float, nullable=False)
     qty = Column(Float, nullable=False)
@@ -119,6 +125,7 @@ class BookTicker(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='spot')
     update_id = Column(String, nullable=False)
     best_bid_price = Column(Float, nullable=False)
     best_bid_qty = Column(Float, nullable=False)
@@ -135,6 +142,7 @@ class LiquidationSnapshot(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='swap')
     side = Column(String)
     order_type = Column(String)
     time_in_force = Column(String)
@@ -164,6 +172,7 @@ class BookDepth(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='spot')
     update_id = Column(String, nullable=False) # lastUpdateId
     bids = Column(JSON, nullable=False) # List of [price, qty]
     asks = Column(JSON, nullable=False) # List of [price, qty]
@@ -178,6 +187,7 @@ class IndexPriceKline(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='swap')
     timeframe = Column(String, nullable=False)
     open = Column(Float, nullable=False)
     high = Column(Float, nullable=False)
@@ -197,6 +207,7 @@ class MarkPriceKline(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='swap')
     timeframe = Column(String, nullable=False)
     open = Column(Float, nullable=False)
     high = Column(Float, nullable=False)
@@ -213,6 +224,7 @@ class PremiumIndexKline(Base):
     time = Column(DateTime(timezone=True), nullable=False)
     symbol = Column(String, nullable=False)
     exchange = Column(String, nullable=False)
+    instrument_type = Column(String, default='swap')
     timeframe = Column(String, nullable=False)
     open = Column(Float, nullable=False)
     high = Column(Float, nullable=False)

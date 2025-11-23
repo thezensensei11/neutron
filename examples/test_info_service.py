@@ -17,8 +17,9 @@ def main():
     print("Getting InfoService...")
     info_service = crawler.get_info_service()
     
-    print("Generating Summary (Fast Scan)...")
-    summary = info_service.generate_summary(deep_scan=False)
+    print("Generating Summary (Deep Scan)...")
+    #summary = info_service.generate_summary(deep_scan=False)
+    summary = info_service.generate_summary(deep_scan=True, show_gaps=False)
     
     print("\n" + "="*50)
     print(summary)

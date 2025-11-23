@@ -166,6 +166,62 @@ Downloads Funding Rate history.
 }
 ```
 
+##### `backfill_metrics`
+Downloads Market Metrics (Open Interest, Long/Short Ratio).
+*Source: Binance Vision.*
+
+**Parameters:**
+- `start_date`, `end_date`, `rewrite`.
+
+```json
+{
+    "type": "backfill_metrics",
+    "params": { ... }
+}
+```
+
+##### `backfill_mark_price_klines` / `backfill_index_price_klines` / `backfill_premium_index_klines`
+Downloads Advanced Klines for Futures.
+
+**Parameters:**
+- `timeframe`, `start_date`, `end_date`, `rewrite`.
+
+```json
+{
+    "type": "backfill_mark_price_klines",
+    "params": {
+        "timeframe": "1h",
+        "start_date": "2023-01-01T00:00:00"
+    }
+}
+```
+
+---
+
+## 3. Gap Repair Configuration
+
+Neutron includes a dedicated tool for finding and fixing data gaps.
+
+### Usage
+The `scripts/fill_gaps.py` script reads your `config.json` to know which exchanges and symbols to check.
+
+```bash
+python scripts/fill_gaps.py config.json --mode [smart|zero_fill]
+```
+
+### Modes
+1.  **`smart` (Default)**:
+    *   Identifies gaps in `OHLCV` data.
+    *   Attempts to download the missing data from the exchange.
+    *   If the exchange returns no data (and the gap is confirmed), it falls back to zero-filling (if configured).
+    
+2.  **`zero_fill`**:
+    *   Forces synthesis of zero-volume candles for the identified gaps.
+    *   Useful for known maintenance windows or delisted periods where no data exists.
+    *   Synthesized candles have `volume=0` and `is_interpolated=true`.
+
+---
+
 ## How to Run
 
 Run the downloader module with your config file:

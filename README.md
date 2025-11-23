@@ -46,6 +46,11 @@ Flexible storage options to suit your infrastructure:
 - **Data Integrity Checks**: Validates price (>0) and volume (>=0) during ingestion.
 - **Exchange Metadata Sync**: Automatically syncs market metadata (symbols, precision, limits) to your database.
 
+### 6. Data Quality Assurance
+- **Gap Detection**: `InfoService` scans your data to identify missing ranges.
+- **Smart Repair**: `GapFillService` attempts to re-download missing data or synthesize zero-volume candles ("zero-fill") for maintenance periods.
+- **Interpolation Tracking**: Tracks synthesized data with an `is_interpolated` flag for transparency.
+
 ---
 
 ## 📂 Code Structure
@@ -77,6 +82,8 @@ neutron/
         └── services/           # Business logic services
             ├── metadata_sync.py    # Syncs markets/symbols
             ├── ohlcv_backfill.py   # OHLCV download logic
+            ├── gap_fill_service.py # Smart gap detection & repair
+            ├── info_service.py     # Data quality reporting
             └── ...                 # Other data services
 ```
 
@@ -198,11 +205,26 @@ uv run python scripts/reset_db.py
 To generate a rich summary of all downloaded data (coverage, gaps, counts):
 
 ```python
-from neutron.core.crawler import DataCrawler
+from neutron.services.info_service import InfoService
+from neutron.core.downloader import Downloader
 
-crawler = DataCrawler(storage_type='database') # or 'parquet'
-info = crawler.get_info_service()
-print(info.generate_summary(deep_scan=False))
+# Initialize with your config
+downloader = Downloader(config=config)
+info = InfoService(downloader.storage)
+
+# Generate report
+info.generate_summary(deep_scan=True)
+```
+
+### Repairing Gaps
+To automatically find and fix missing data:
+
+```bash
+# Smart Mode: Try to download, fallback to zero-fill if needed
+python scripts/fill_gaps.py config.json --mode smart
+
+# Zero-Fill Mode: Force zero-fill for all gaps (useful for known maintenance)
+python scripts/fill_gaps.py config.json --mode zero_fill
 ```
 
 ---

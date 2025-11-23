@@ -5,7 +5,7 @@ import pandas as pd
 from pathlib import Path
 import logging
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, case
 from ..db.session import ScopedSession
 from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot
 from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot, OpenInterest, BookDepth, IndexPriceKline, MarkPriceKline, PremiumIndexKline
@@ -314,7 +314,8 @@ class DatabaseStorage(StorageBackend):
                         *group_cols,
                         func.min(model.time).label('start_date'),
                         func.max(model.time).label('end_date'),
-                        func.count().label('count')
+                        func.count().label('count'),
+                        func.sum(case((model.is_interpolated == True, 1), else_=0)).label('interpolated_count') if hasattr(model, 'is_interpolated') else text("0").label('interpolated_count')
                     ).group_by(*group_cols)
                     
                     query_results = db.execute(stmt).all()
@@ -333,14 +334,60 @@ class DatabaseStorage(StorageBackend):
                             'start_date': row.start_date,
                             'end_date': row.end_date,
                             'count': row.count,
+                            'interpolated_count': getattr(row, 'interpolated_count', 0),
                             'gaps': []
                         }
                         
-                        # Deep scan for gaps (simplified for now)
+                        # Deep scan for gaps
                         if deep_scan and entry['count'] > 0:
-                            # TODO: Implement gap detection with window functions
-                            # For now, just marking as checked
-                            pass
+                            # Gap detection using window functions
+                            # We look for rows where time - prev_time > threshold
+                            # Threshold depends on data type/timeframe
+                            
+                            threshold = None
+                            if data_type == 'ohlcv' or entry['timeframe']:
+                                # Parse timeframe
+                                tf = entry['timeframe']
+                                if tf == '1h': threshold = timedelta(hours=1, minutes=5) # 5 min tolerance
+                                elif tf == '1m': threshold = timedelta(minutes=1, seconds=30)
+                                elif tf == '1d': threshold = timedelta(days=1, hours=1)
+                                else: threshold = timedelta(hours=1) # Default
+                            elif data_type == 'metrics':
+                                # Metrics usually every 5 mins
+                                threshold = timedelta(minutes=10)
+                            else:
+                                # For tick data/aggTrades, gaps are harder to define without expected frequency
+                                # Maybe skip or use a large threshold like 1 hour
+                                threshold = timedelta(hours=1)
+
+                            if threshold:
+                                # Build filter conditions dynamically based on available columns
+                                filters = []
+                                if 'exchange' in columns and entry['exchange']:
+                                    filters.append(model.exchange == entry['exchange'])
+                                if 'symbol' in columns and entry['symbol']:
+                                    filters.append(model.symbol == entry['symbol'])
+                                if 'instrument_type' in columns and entry['instrument_type']:
+                                    filters.append(model.instrument_type == entry['instrument_type'])
+                                if 'timeframe' in columns and entry['timeframe']:
+                                    filters.append(model.timeframe == entry['timeframe'])
+
+                                # Subquery to calculate gaps
+                                subq = select(
+                                    model.time,
+                                    func.lag(model.time).over(order_by=model.time).label('prev_time')
+                                ).where(*filters).subquery()
+
+                                gap_stmt = select(
+                                    subq.c.prev_time,
+                                    subq.c.time
+                                ).where(
+                                    (subq.c.time - subq.c.prev_time) > threshold
+                                )
+                                
+                                gaps = db.execute(gap_stmt).all()
+                                for g in gaps:
+                                    entry['gaps'].append((g.prev_time, g.time))
                             
                         results.append(entry)
                         

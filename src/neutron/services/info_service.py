@@ -10,7 +10,7 @@ class InfoService:
     def __init__(self, storage: StorageBackend):
         self.storage = storage
 
-    def generate_summary(self, deep_scan: bool = False) -> str:
+    def generate_summary(self, deep_scan: bool = False, show_gaps: bool = False) -> str:
         """
         Generate a human-readable summary of available data.
         """
@@ -46,8 +46,10 @@ class InfoService:
             items.sort(key=lambda x: (x['data_type'], x['symbol']))
             
             # Create table
-            report.append("| Symbol | Data Type | Timeframe | Start Date | End Date | Count | Continuity |")
-            report.append("|---|---|---|---|---|---|---|")
+            report.append("| Symbol | Data Type | Timeframe | Start Date | End Date | Count | Quality | Continuity |")
+            report.append("|---|---|---|---|---|---|---|---|")
+            
+            gap_details = []
             
             for item in items:
                 symbol = item['symbol']
@@ -66,13 +68,103 @@ class InfoService:
                 else:
                     count_str = f"{count} {unit}"
                     
-                # Continuity (placeholder)
+                # Calculate Quality Score
+                quality_str = "-"
+                if tf and tf != '-' and start and end:
+                    try:
+                        # Parse timeframe to seconds
+                        tf_map = {'1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400}
+                        tf_seconds = tf_map.get(tf)
+                        if tf_seconds:
+                            total_seconds = (end - start).total_seconds()
+                            expected_count = total_seconds / tf_seconds
+                            if expected_count > 0:
+                                quality = (count / expected_count) * 100
+                                quality = min(quality, 100.0) # Cap at 100%
+                                quality_str = f"{quality:.1f}%"
+                            
+                            interpolated_count = item.get('interpolated_count', 0)
+                            interpolated_pct = (interpolated_count / count * 100) if count > 0 else 0.0
+                            interpolated_pct_str = f"{interpolated_pct:.1f}%"
+                    except:
+                        pass
+
+                # Continuity & Gap Metrics
                 continuity = "✅" 
                 if item.get('gaps'):
-                    continuity = f"⚠️ {len(item['gaps'])} gaps"
+                    gap_count = len(item['gaps'])
+                    gaps = item['gaps']
+                    
+                    # Metrics
+                    total_gap_duration = sum([(g_end - g_start).total_seconds() for g_start, g_end in gaps])
+                    max_gap = max([(g_end - g_start).total_seconds() for g_start, g_end in gaps])
+                    avg_gap = total_gap_duration / gap_count if gap_count > 0 else 0
+                    
+                    # Format durations helper
+                    def fmt_dur(seconds):
+                        if seconds > 86400: return f"{seconds/86400:.1f}d"
+                        if seconds > 3600: return f"{seconds/3600:.1f}h"
+                        return f"{seconds/60:.1f}m"
+
+                    if gap_count > 0:
+                        continuity = f"⚠️ {gap_count} gaps (Total: {fmt_dur(total_gap_duration)}, Max: {fmt_dur(max_gap)})"
+                    else:
+                        continuity = "✅ Continuous"
+                    
+                    # Collect gap details if requested
+                    if show_gaps:
+                        for g_start, g_end in gaps:
+                            g_dur = g_end - g_start
+                            gap_details.append(f"- **{symbol}** ({dtype}): {g_start} -> {g_end} (Duration: {g_dur})")
                 
-                report.append(f"| {symbol} | {dtype} | {tf} | {start} | {end} | {count_str} | {continuity} |")
+                report.append(f"| {symbol} | {dtype} | {tf} | {start} | {end} | {count_str} | {quality_str} | {interpolated_pct_str} | {continuity} |")
+            
+            if gap_details:
+                report.append("")
+                report.append("### Gap Details")
+                report.extend(gap_details)
             
             report.append("")
             
         return "\n".join(report)
+
+    def get_gap_report(self, deep_scan: bool = True) -> List[Dict[str, Any]]:
+        """
+        Generate a structured report of all gaps found in storage.
+        Returns a list of dicts defining the gaps to be filled.
+        """
+        try:
+            data = self.storage.list_available_data(deep_scan=deep_scan)
+        except Exception as e:
+            logger.error(f"Failed to list available data for gap report: {e}")
+            return []
+            
+        gap_tasks = []
+        
+        for item in data:
+            gaps = item.get('gaps', [])
+            if not gaps:
+                continue
+                
+            exchange = item.get('exchange')
+            symbol = item.get('symbol')
+            instrument_type = item.get('instrument_type', 'spot')
+            timeframe = item.get('timeframe')
+            data_type = item.get('data_type')
+            
+            # Only support OHLCV for now as backfill service is specialized for it
+            if data_type != 'ohlcv':
+                continue
+                
+            for start, end in gaps:
+                gap_tasks.append({
+                    'exchange': exchange,
+                    'symbol': symbol,
+                    'instrument_type': instrument_type,
+                    'timeframe': timeframe,
+                    'start_date': start,
+                    'end_date': end,
+                    'duration': (end - start).total_seconds()
+                })
+                
+        return gap_tasks
