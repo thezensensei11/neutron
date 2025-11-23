@@ -44,6 +44,11 @@ class BinanceVisionDownloader:
             "headers": ["time", "side", "order_type", "time_in_force", "original_quantity", "price", "average_price", "order_status", "last_fill_quantity", "accumulated_fill_quantity"],
             "time_col": "time"
         },
+        "metrics": {
+            "path": "metrics",
+            "headers": ["create_time", "symbol", "sum_open_interest", "sum_open_interest_value", "count_top_trader_long_short_ratio", "sum_top_trader_long_short_ratio", "count_long_short_ratio", "sum_long_short_ratio"],
+            "time_col": "create_time"
+        },
         # Klines are special, they have sub-paths like klines/1m
         # We might handle them separately or add logic
     }

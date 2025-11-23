@@ -16,10 +16,25 @@ from ..exchange.bitstamp import BitstampExchange
 logger = logging.getLogger(__name__)
 
 class Downloader:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str = None, config: NeutronConfig = None, log_file: str = "data.log"):
         self.config_loader = ConfigLoader()
-        self.state_manager = DataStateManager()
-        self.config = self.config_loader.load(config_path)
+        
+        if config:
+            self.config = config
+        elif config_path:
+            self.config = self.config_loader.load(config_path)
+        else:
+            raise ValueError("Either config_path or config object must be provided")
+
+        self.log_file = log_file
+        
+        # Initialize State Managers with configured paths
+        self.state_manager = DataStateManager(state_file=self.config.data_state_path)
+        
+        # ExchangeStateManager is a singleton, so we initialize it here to ensure path is set if first time
+        from .exchange_state import ExchangeStateManager
+        self.exchange_state_manager = ExchangeStateManager(state_file=self.config.exchange_state_path)
+            
         self.exchange_cache = {}
         
         # Initialize Storage Backend
@@ -29,8 +44,34 @@ class Downloader:
             self.storage = ParquetStorage(self.config.storage.path)
             logger.info(f"Using Parquet storage at {self.config.storage.path}")
         else:
+            if self.config.storage.database_url:
+                from ..db.session import configure_db
+                configure_db(self.config.storage.database_url)
+                logger.info(f"Configured Database storage with URL: {self.config.storage.database_url}")
+            
             self.storage = DatabaseStorage()
             logger.info("Using Database storage")
+            
+        self._setup_data_logger()
+
+    def _setup_data_logger(self):
+        """Setup the data monitor logger globally."""
+        data_logger = logging.getLogger("data_monitor")
+        data_logger.setLevel(logging.INFO)
+        data_logger.propagate = False  # Prevent propagation to root logger
+        
+        # Check if we already have the correct file handler
+        has_file_handler = any(isinstance(h, logging.FileHandler) and h.baseFilename.endswith(self.log_file) for h in data_logger.handlers)
+        
+        if not has_file_handler:
+            # Remove existing handlers to avoid duplicates if re-initializing with different file
+            for h in data_logger.handlers:
+                data_logger.removeHandler(h)
+                
+            fh = logging.FileHandler(self.log_file)
+            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+            fh.setFormatter(formatter)
+            data_logger.addHandler(fh)
 
     def _run_backfill_generic(self, params: Dict[str, Any], data_type: str):
         symbol = params.get('symbol')
@@ -84,11 +125,12 @@ class Downloader:
                 self._run_backfill_tick_data(task_params)
             elif task_type == 'backfill_funding':
                 self._run_backfill_funding(task_params)
-            elif task_type in ['backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation']:
+            elif task_type in ['backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation', 'backfill_metrics']:
                 data_type_map = {
                     'backfill_agg_trades': 'aggTrades',
                     'backfill_book_ticker': 'bookTicker',
-                    'backfill_liquidation': 'liquidationSnapshot'
+                    'backfill_liquidation': 'liquidationSnapshot',
+                    'backfill_metrics': 'metrics'
                 }
                 self._run_backfill_generic(task_params, data_type_map[task_type])
             else:
@@ -141,11 +183,12 @@ class Downloader:
                         self._run_backfill_tick_data(task.params)
                     elif task.type == 'backfill_funding':
                         self._run_backfill_funding(task.params)
-                    elif task.type in ['backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation']:
+                    elif task.type in ['backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation', 'backfill_metrics']:
                         data_type_map = {
                             'backfill_agg_trades': 'aggTrades',
                             'backfill_book_ticker': 'bookTicker',
-                            'backfill_liquidation': 'liquidationSnapshot'
+                            'backfill_liquidation': 'liquidationSnapshot',
+                            'backfill_metrics': 'metrics'
                         }
                         self._run_backfill_generic(task.params, data_type_map[task.type])
                     else:

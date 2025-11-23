@@ -11,7 +11,7 @@ class ExchangeStateManager:
     _instance = None
     _lock = threading.Lock()
 
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -19,12 +19,12 @@ class ExchangeStateManager:
                     cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self, state_file: str = "exchange_state.json"):
         if getattr(self, '_initialized', False):
             return
             
-        # Use absolute path to ensure file is created in project root
-        self.state_file = Path("/Users/arch/Desktop/neutron/exchange_state.json")
+        # Use provided path
+        self.state_file = Path(state_file)
         self.state: Dict[str, Any] = {}
         self.file_lock = threading.RLock()
         self._load_state()

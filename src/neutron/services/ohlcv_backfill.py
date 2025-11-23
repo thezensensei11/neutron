@@ -16,17 +16,7 @@ class OHLCVBackfillService:
         self.exchange = exchange
         self.state_manager = state_manager
         self.storage = storage
-        self._setup_data_logger()
-
-    def _setup_data_logger(self):
         self.data_logger = logging.getLogger("data_monitor")
-        self.data_logger.setLevel(logging.INFO)
-        # Avoid adding multiple handlers if already exists
-        if not self.data_logger.handlers:
-            fh = logging.FileHandler("data.log")
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-            fh.setFormatter(formatter)
-            self.data_logger.addHandler(fh)
 
     def backfill_symbol(self, symbol: str, timeframe: str, start_date: datetime, end_date: Optional[datetime] = None, instrument_type: str = 'spot'):
         """
@@ -34,6 +24,9 @@ class OHLCVBackfillService:
         """
         if end_date is None:
             end_date = datetime.now(timezone.utc)
+
+        # Exchange context for logging
+        exch_id = self.exchange.exchange_id
 
         # Check for listing date to optimize start_date
         exchange_state = ExchangeStateManager()
@@ -45,13 +38,11 @@ class OHLCVBackfillService:
                 listing_date = listing_date.replace(tzinfo=timezone.utc)
                 
             if listing_date > start_date:
-                msg = f"Adjusting start date for {symbol} from {start_date} to {listing_date} (Listing Date)"
+                msg = f"[{exch_id}] Adjusting start date for {symbol} from {start_date} to {listing_date} (Listing Date)"
                 logger.info(msg)
                 self.data_logger.info(msg)
                 start_date = listing_date
 
-        # Exchange context for logging
-        exch_id = self.exchange.exchange_id
         msg = f"[{exch_id}] Starting backfill for {symbol} {timeframe} from {start_date} to {end_date}"
         logger.info(msg)
         self.data_logger.info(msg)

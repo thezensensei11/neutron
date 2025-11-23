@@ -12,6 +12,7 @@
             "params": {
                 "timeframe": "1h",
                 "start_date": "2010-01-01T00:00:00",
+                "end_date": "2025-11-23T00:00:00",
                 "rewrite": true
             },
             "exchanges": {

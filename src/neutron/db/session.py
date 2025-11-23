@@ -28,3 +28,16 @@ def init_db():
     # Import models here to ensure they are registered with Base
     from . import models
     Base.metadata.create_all(bind=engine)
+
+def configure_db(url: str):
+    """Reconfigure the database engine with a new URL."""
+    global engine, SessionLocal, ScopedSession
+    
+    if engine:
+        engine.dispose()
+        
+    engine = create_engine(url, pool_pre_ping=True)
+    SessionLocal.configure(bind=engine)
+    # ScopedSession automatically uses the new SessionLocal factory
+    # But we should remove any existing sessions
+    ScopedSession.remove()

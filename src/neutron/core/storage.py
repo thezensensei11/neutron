@@ -1,27 +1,23 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 from pathlib import Path
 import logging
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select
 from ..db.session import ScopedSession
-from ..db.models import OHLCV, Trade, FundingRate
+from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot
+from ..db.models import OHLCV, Trade, FundingRate, AggTrade, BookTicker, LiquidationSnapshot, OpenInterest
 
 logger = logging.getLogger(__name__)
 
 class StorageBackend(ABC):
+# ... (interface remains same)
     @abstractmethod
-    def save_ohlcv(self, data: List[Dict[str, Any]]):
+    def save_generic_data(self, data: List[Dict[str, Any]], data_type: str):
         pass
-
-    @abstractmethod
-    def save_tick_data(self, data: List[Dict[str, Any]]):
-        pass
-
-    @abstractmethod
-    def save_funding_rates(self, data: List[Dict[str, Any]]):
-        pass
+# ...
 
 class DatabaseStorage(StorageBackend):
     def _filter_data(self, data: List[Dict[str, Any]], model_class) -> List[Dict[str, Any]]:
@@ -72,6 +68,161 @@ class DatabaseStorage(StorageBackend):
             db.execute(stmt)
             db.commit()
         logger.info(f"Saved {len(data)} funding rates to database.")
+
+    def load_ohlcv(self, exchange: str, symbol: str, timeframe: str, start_date: datetime, end_date: datetime, instrument_type: str = 'spot') -> pd.DataFrame:
+        with ScopedSession() as db:
+            stmt = select(OHLCV).where(
+                OHLCV.exchange == exchange,
+                OHLCV.symbol == symbol,
+                OHLCV.timeframe == timeframe,
+                OHLCV.time >= start_date,
+                OHLCV.time < end_date
+            ).order_by(OHLCV.time)
+            
+            result = db.execute(stmt)
+            # Convert to list of dicts then DataFrame
+            # This is more efficient than pd.read_sql for large datasets with ORM
+            data = [row[0].__dict__ for row in result]
+            
+        if not data:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(data)
+        # Remove SQLAlchemy internal state
+        if '_sa_instance_state' in df.columns:
+            df = df.drop(columns=['_sa_instance_state'])
+            
+        return df
+
+    def load_tick_data(self, exchange: str, symbol: str, start_date: datetime, end_date: datetime, instrument_type: str = 'spot') -> pd.DataFrame:
+        with ScopedSession() as db:
+            stmt = select(Trade).where(
+                Trade.exchange == exchange,
+                Trade.symbol == symbol,
+                Trade.time >= start_date,
+                Trade.time < end_date
+            ).order_by(Trade.time)
+            
+            result = db.execute(stmt)
+            data = [row[0].__dict__ for row in result]
+            
+        if not data:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(data)
+        if '_sa_instance_state' in df.columns:
+            df = df.drop(columns=['_sa_instance_state'])
+        return df
+
+    def load_funding_rates(self, exchange: str, symbol: str, start_date: datetime, end_date: datetime, instrument_type: str = 'swap') -> pd.DataFrame:
+        with ScopedSession() as db:
+            stmt = select(FundingRate).where(
+                FundingRate.exchange == exchange,
+                FundingRate.symbol == symbol,
+                FundingRate.time >= start_date,
+                FundingRate.time < end_date
+            ).order_by(FundingRate.time)
+            
+            result = db.execute(stmt)
+            data = [row[0].__dict__ for row in result]
+            
+        if not data:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(data)
+        if '_sa_instance_state' in df.columns:
+            df = df.drop(columns=['_sa_instance_state'])
+        return df
+
+    def save_generic_data(self, data: List[Dict[str, Any]], data_type: str):
+        if not data:
+            return
+
+        model_map = {
+            'aggTrades': AggTrade,
+            'bookTicker': BookTicker,
+            'liquidationSnapshot': LiquidationSnapshot,
+            'trades': Trade,
+            'funding': FundingRate,
+            'metrics': OpenInterest, # Map metrics to OpenInterest for now
+            'openInterest': OpenInterest
+        }
+        
+        model_class = model_map.get(data_type)
+        if not model_class:
+            logger.warning(f"Unknown data type {data_type} for DatabaseStorage")
+            return
+
+        # Special handling for metrics -> OpenInterest mapping
+        if data_type == 'metrics':
+            transformed_data = []
+            for d in data:
+                new_d = d.copy()
+                # Map create_time to time if not already done
+                if 'create_time' in new_d and 'time' not in new_d:
+                    new_d['time'] = new_d['create_time']
+                
+                # Map sum_open_interest to value
+                if 'sum_open_interest' in new_d:
+                    new_d['value'] = new_d['sum_open_interest']
+                
+                transformed_data.append(new_d)
+            data = transformed_data
+
+        clean_data = self._filter_data(data, model_class)
+        
+        with ScopedSession() as db:
+            # Chunk inserts
+            chunk_size = 5000
+            for i in range(0, len(clean_data), chunk_size):
+                chunk = clean_data[i:i + chunk_size]
+                stmt = insert(model_class).values(chunk)
+                
+                # Determine conflict columns based on PK
+                pk_cols = [c.name for c in model_class.__table__.primary_key.columns]
+                stmt = stmt.on_conflict_do_nothing(index_elements=pk_cols)
+                
+                db.execute(stmt)
+            db.commit()
+        logger.info(f"Saved {len(data)} {data_type} records to database.")
+
+    def load_generic_data(self, data_type: str, exchange: str, symbol: str, start_date: datetime, end_date: datetime, instrument_type: str = 'spot') -> pd.DataFrame:
+        """
+        Load generic data from database.
+        """
+        model_map = {
+            'aggTrades': AggTrade,
+            'bookTicker': BookTicker,
+            'liquidationSnapshot': LiquidationSnapshot,
+            'trades': Trade,
+            'funding': FundingRate,
+            'metrics': OpenInterest,
+            'openInterest': OpenInterest
+        }
+        
+        model_class = model_map.get(data_type)
+        if not model_class:
+            logger.warning(f"Unknown data type {data_type} for DatabaseStorage")
+            return pd.DataFrame()
+
+        with ScopedSession() as db:
+            stmt = select(model_class).where(
+                model_class.exchange == exchange,
+                model_class.symbol == symbol,
+                model_class.time >= start_date,
+                model_class.time < end_date
+            ).order_by(model_class.time)
+            
+            result = db.execute(stmt)
+            data = [row[0].__dict__ for row in result]
+            
+        if not data:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(data)
+        if '_sa_instance_state' in df.columns:
+            df = df.drop(columns=['_sa_instance_state'])
+        return df
 
 class ParquetStorage(StorageBackend):
     def __init__(self, base_dir: str):
@@ -231,3 +382,59 @@ class ParquetStorage(StorageBackend):
                 save_df.to_parquet(path)
         
         logger.info(f"Saved {len(data)} {data_type} records to parquet.")
+
+    def _load_parquet_range(self, exchange: str, symbol: str, timeframe: str, start_date: datetime, end_date: datetime, instrument_type: str) -> pd.DataFrame:
+        """Helper to load parquet files for a date range."""
+        dfs = []
+        current_date = start_date.date()
+        end_date_date = end_date.date()
+        
+        while current_date <= end_date_date:
+            date_obj = datetime.combine(current_date, datetime.min.time())
+            path = self._get_path(exchange, instrument_type, symbol, timeframe, date_obj)
+            
+            if path.exists():
+                try:
+                    df = pd.read_parquet(path)
+                    dfs.append(df)
+                except Exception as e:
+                    logger.error(f"Error reading parquet file {path}: {e}")
+            
+            current_date += timedelta(days=1)
+            
+        if not dfs:
+            return pd.DataFrame()
+            
+        combined_df = pd.concat(dfs)
+        
+        # Filter exact time range
+        # Ensure 'time' column is datetime
+        if 'time' in combined_df.columns:
+            if combined_df['time'].dt.tz is None:
+                # Assuming UTC if no timezone
+                combined_df['time'] = combined_df['time'].dt.tz_localize('UTC')
+            
+            # Ensure start/end are tz-aware
+            if start_date.tzinfo is None:
+                start_date = start_date.replace(tzinfo=timezone.utc)
+            if end_date.tzinfo is None:
+                end_date = end_date.replace(tzinfo=timezone.utc)
+                
+            combined_df = combined_df[
+                (combined_df['time'] >= start_date) & 
+                (combined_df['time'] < end_date)
+            ]
+            
+        return combined_df.sort_values('time')
+
+    def load_ohlcv(self, exchange: str, symbol: str, timeframe: str, start_date: datetime, end_date: datetime, instrument_type: str = 'spot') -> pd.DataFrame:
+        return self._load_parquet_range(exchange, symbol, timeframe, start_date, end_date, instrument_type)
+
+    def load_tick_data(self, exchange: str, symbol: str, start_date: datetime, end_date: datetime, instrument_type: str = 'spot') -> pd.DataFrame:
+        return self._load_parquet_range(exchange, symbol, "tick", start_date, end_date, instrument_type)
+
+    def load_funding_rates(self, exchange: str, symbol: str, start_date: datetime, end_date: datetime, instrument_type: str = 'swap') -> pd.DataFrame:
+        return self._load_parquet_range(exchange, symbol, "funding", start_date, end_date, instrument_type)
+
+    def load_generic_data(self, data_type: str, exchange: str, symbol: str, start_date: datetime, end_date: datetime, instrument_type: str = 'spot') -> pd.DataFrame:
+        return self._load_parquet_range(exchange, symbol, data_type, start_date, end_date, instrument_type)
