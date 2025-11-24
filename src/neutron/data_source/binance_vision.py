@@ -138,26 +138,26 @@ class BinanceVisionDownloader:
             return None
 
         url = self._generate_url(symbol, date, data_type, instrument_type, timeframe)
-        logger.info(f"Processing {symbol} {data_type} for {date.date()} from {url}")
+        logger.debug(f"Processing {symbol} {data_type} for {date.date()} from {url}")
 
         try:
-            response = requests.get(url, stream=True)
-            if response.status_code == 404:
-                logger.warning(f"Data not found for {symbol} {data_type} on {date.date()}")
-                return None
-            response.raise_for_status()
+            with requests.get(url, timeout=30) as response:
+                if response.status_code == 404:
+                    logger.warning(f"Data not found for {symbol} {data_type} on {date.date()}")
+                    return None
+                response.raise_for_status()
 
-            config = self.DATA_TYPES.get(data_type)
-            if not config:
-                logger.warning(f"Unknown data type: {data_type}, trying default parsing")
-                # Fallback or error?
+                config = self.DATA_TYPES.get(data_type)
+                if not config:
+                    logger.warning(f"Unknown data type: {data_type}, trying default parsing")
+                    
+                headers = config.get("headers") if config else None
                 
-            headers = config.get("headers") if config else None
-            
-            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-                csv_filename = z.namelist()[0]
-                with z.open(csv_filename) as f:
-                    df = pd.read_csv(f, header=None, names=headers)
+                with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                    csv_filename = z.namelist()[0]
+                    with z.open(csv_filename) as f:
+                        # Use low_memory=False to avoid DtypeWarning for mixed types
+                        df = pd.read_csv(f, header=None, names=headers, low_memory=False)
             
             # Check if the first row is actually the header
             if not df.empty and config and "time_col" in config:
@@ -179,8 +179,9 @@ class BinanceVisionDownloader:
                      # Convert time column to numeric since it was likely inferred as object due to the header string
                      try:
                          df[time_col] = pd.to_numeric(df[time_col])
-                     except Exception as e:
-                         logger.warning(f"Failed to convert {time_col} to numeric: {e}")
+                     except Exception:
+                         # This is expected for string timestamps
+                         pass
 
             # Post-processing
             if config and "time_col" in config:
@@ -190,8 +191,8 @@ class BinanceVisionDownloader:
                     # We check the magnitude of the timestamp to determine if it's in seconds, milliseconds, or microseconds
                     sample_ts = df[time_col].iloc[0]
                     
-                    # Check for numeric types, including numpy types (e.g. np.int64) which are common in pandas
-                    if isinstance(sample_ts, (int, float, np.number)):
+                    # Check for numeric types
+                    if pd.api.types.is_numeric_dtype(df[time_col]):
                         if sample_ts > 1e14: # Microseconds
                             df[time_col] = pd.to_datetime(df[time_col], unit='us')
                         elif sample_ts > 1e11: # Milliseconds
@@ -199,25 +200,26 @@ class BinanceVisionDownloader:
                         else: # Seconds
                             df[time_col] = pd.to_datetime(df[time_col], unit='s')
                     else:
-                        # Check if string is numeric (e.g. "1731628800000")
-                        if isinstance(sample_ts, str) and sample_ts.replace('.','',1).isdigit():
-                            try:
-                                df[time_col] = pd.to_numeric(df[time_col])
-                                # Re-evaluate sample_ts
-                                sample_ts = df[time_col].iloc[0]
-                                if sample_ts > 1e14: # Microseconds
-                                    df[time_col] = pd.to_datetime(df[time_col], unit='us')
-                                elif sample_ts > 1e11: # Milliseconds
-                                    df[time_col] = pd.to_datetime(df[time_col], unit='ms')
-                                else: # Seconds
-                                    df[time_col] = pd.to_datetime(df[time_col], unit='s')
-                            except:
-                                # Fallback
-                                df[time_col] = pd.to_datetime(df[time_col])
-                        else:
-                            # Assume string date or already datetime
-                            # Assume string date or already datetime
+                        # Try parsing as string/ISO format first
+                        try:
                             df[time_col] = pd.to_datetime(df[time_col])
+                        except Exception:
+                            # If that fails, check if it's a string representation of a number
+                            if isinstance(sample_ts, str) and sample_ts.replace('.','',1).isdigit():
+                                try:
+                                    df[time_col] = pd.to_numeric(df[time_col])
+                                    # Re-evaluate sample_ts from the converted column
+                                    sample_ts_num = df[time_col].iloc[0]
+                                    if sample_ts_num > 1e14: # Microseconds
+                                        df[time_col] = pd.to_datetime(df[time_col], unit='us')
+                                    elif sample_ts_num > 1e11: # Milliseconds
+                                        df[time_col] = pd.to_datetime(df[time_col], unit='ms')
+                                    else: # Seconds
+                                        df[time_col] = pd.to_datetime(df[time_col], unit='s')
+                                except Exception as e:
+                                    logger.error(f"Failed to parse numeric string timestamp column {time_col}: {e}")
+                            else:
+                                logger.error(f"Failed to parse timestamp column {time_col}")
             
             # Normalize time column name to 'time'
             if config and "time_col" in config:

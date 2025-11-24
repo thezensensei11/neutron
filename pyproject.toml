@@ -13,7 +13,12 @@ dependencies = [
     "seaborn>=0.13.2",
     "sqlalchemy>=2.0.44",
     "tenacity>=9.1.2",
+    "tqdm>=4.66.0",
+    "pyarrow>=15.0.0",
 ]
+
+[project.scripts]
+neutron-backfill = "neutron.core.downloader:main"
 
 [build-system]
 requires = ["hatchling"]

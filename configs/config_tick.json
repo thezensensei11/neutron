@@ -1,0 +1,73 @@
+{
+    "storage": {
+        "ohlcv_path": "data/ohlcv",
+        "questdb_host": "localhost",
+        "questdb_ilp_port": 9009,
+        "questdb_pg_port": 8812
+    },
+    "data_state_path": "states/ohlcv_data_state.json",
+    "tick_data_state_path": "states/tick_data_state.json",
+    "exchange_state_path": "states/exchange_state.json",
+    "max_workers": 8,
+    "tasks": [
+        {
+            "type": "backfill_agg_trades",
+            "params": {
+                "start_date": "2025-11-01T00:00:00",
+                "end_date": "2025-11-11T00:00:00"
+            },
+            "exchanges": {
+                "binance": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    },
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "type": "backfill_book_depth",
+            "params": {
+                "start_date": "2025-11-01T00:00:00",
+                "end_date": "2025-11-11T00:00:00"
+            },
+            "exchanges": {
+                "binance": {
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "type": "load_questdb",
+            "params": {
+                "start_date": "2025-11-01T00:00:00",
+                "end_date": "2025-11-11T00:00:00",
+                "data_type": "aggTrades",
+                "instrument_type": "swap",
+                "exchange": "binance",
+                "symbol": "BTC/USDT"
+            }
+        },
+        {
+            "type": "load_questdb",
+            "params": {
+                "start_date": "2025-11-01T00:00:00",
+                "end_date": "2025-11-11T00:00:00",
+                "data_type": "aggTrades",
+                "instrument_type": "spot",
+                "exchange": "binance",
+                "symbol": "BTC/USDT"
+            }
+        }
+    ]
+}

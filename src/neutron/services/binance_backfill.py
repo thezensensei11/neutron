@@ -1,35 +1,41 @@
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+import pandas as pd
+import math
 
 from ..data_source.binance_vision import BinanceVisionDownloader
 
 logger = logging.getLogger("tick_monitor")
 
 class BinanceBackfillService:
-    def __init__(self, download_dir: str = "data/downloads", state_manager=None, exchange_name="binance", instrument_type="spot", storage=None):
+    def __init__(self, download_dir: str = "data/downloads", state_manager=None, exchange_name="binance", instrument_type="spot", storage=None, progress_manager=None):
         self.downloader = BinanceVisionDownloader(download_dir=download_dir)
         self.state_manager = state_manager
         self.exchange_name = exchange_name
         self.instrument_type = instrument_type
-        self.storage = storage
+        self.storage = storage # Expecting ParquetStorage instance here
+        self.progress_manager = progress_manager
+        self.progress_manager = progress_manager
 
     def backfill_range(self, symbol: str, start_date: datetime, end_date: datetime, data_type: str, timeframe: str = None):
         """
         Backfill generic data for a symbol over a range of dates.
-        
-        This method downloads daily data files, filters them to the specific time range requested
-        (down to the millisecond), and saves the result to the configured storage.
-        
-        Args:
-            symbol: The trading symbol (e.g., 'BTC/USDT')
-            start_date: Start datetime (inclusive)
-            end_date: End datetime (exclusive)
-            data_type: Type of data to backfill (e.g., 'trades', 'aggTrades', 'metrics')
-            timeframe: Optional timeframe for kline data (e.g., '1h')
         """
-        logger.info(f"Starting {data_type} backfill for {symbol} from {start_date.date()} to {end_date.date()}")
+        msg = f"Starting {data_type} backfill for {symbol} from {start_date.date()} to {end_date.date()}"
+        logger.info(msg)
         
+        # Create Progress Bar
+        bar = None
+        if self.progress_manager:
+            total_days = (end_date - start_date).days
+            bar = self.progress_manager.create_bar(
+                task_id=f"{self.exchange_name}_{symbol}_{data_type}",
+                desc=f"[{self.exchange_name}] {symbol} {data_type}",
+                total=total_days,
+                unit="d"
+            )
+
         current_date = start_date
         while current_date < end_date:
             try:
@@ -43,8 +49,6 @@ class BinanceBackfillService:
                 
                 if data:
                     # Filter data to exact time range if provided
-                    # Most generic data has 'time' or 'transactTime' or 'T' (aggTrades) or 't' (klines)
-                    # We need to normalize or check multiple fields
                     filtered_data = []
                     
                     # Determine time field
@@ -80,27 +84,55 @@ class BinanceBackfillService:
                                     continue # Unknown format, skip
                                     
                                 if start_ts <= item_time < end_ts:
+                                    # Try to convert other fields to numeric
+                                    for k, v in item.items():
+                                        if k == time_field: continue
+                                        if isinstance(v, str):
+                                            # Check if it looks like a number
+                                            if v.replace('.', '', 1).replace('-', '', 1).isdigit():
+                                                try:
+                                                    if '.' in v:
+                                                        item[k] = float(v)
+                                                    else:
+                                                        item[k] = int(v)
+                                                except ValueError:
+                                                    pass # Keep as string
+                                            
+                                            # Explicit boolean conversion
+                                            if k in ['is_buyer_maker', 'is_best_match', 'is_interpolated']:
+                                                if isinstance(v, str):
+                                                    if v.lower() == 'true': item[k] = True
+                                                    elif v.lower() == 'false': item[k] = False
+                                                elif isinstance(v, float):
+                                                    if pd.isna(v) or math.isnan(v):
+                                                        item[k] = False # Default to False for NaN
+                                                    else:
+                                                        item[k] = bool(v)
+                                                elif v is None:
+                                                    item[k] = False
+                                            
+                                            # Explicit integer conversion for IDs
+                                            if k in ['agg_trade_id', 'trade_id', 'first_trade_id', 'last_trade_id', 'update_id']:
+                                                try:
+                                                    item[k] = int(v)
+                                                except (ValueError, TypeError):
+                                                    pass
+
                                     filtered_data.append(item)
                             except Exception as e:
-                                logger.warning(f"Error parsing time for item: {e}")
+                                logger.warning(f"Error parsing item: {e}")
                                 continue
                         
-                        if not filtered_data:
-                            logger.info(f"No data found in range {start_date} - {end_date} for {symbol} (Day file contained {len(data)} records)")
-                            # We still might want to update state? No, if no data in range, maybe not.
-                            # But if the day file was downloaded and empty for our range, we technically "checked" it.
-                            # However, for 2 min range, we don't want to mark the whole day as done?
-                            # The state manager marks the *day*. 
-                            # If we are doing sub-daily backfills, our state management (daily resolution) is imperfect.
-                            # But for this specific user request (manageable data), filtering is key.
-                            # If filtering was performed, we must update 'data' to reflect the filtered result
-                            # even if it is empty.
-                            data = filtered_data
+                        if filtered_data:
+                            # Save to Parquet (Source of Truth)
+                            if self.storage:
+                                self.storage.save_generic_data(filtered_data, data_type)
+                            
+                            # total_records += len(filtered_data) # This variable is not defined in the original code.
+                            logger.info(f"Filtered {len(filtered_data)} records for {symbol} in range {start_date} - {end_date}")
                         else:
-                            data = filtered_data
-                            logger.info(f"Filtered {len(data)} records for {symbol} in range {start_date} - {end_date}")
-                    
-                    if data and self.storage:
+                            logger.debug(f"No relevant data found in daily file for {symbol} on {current_date.date()}")
+                            logger.info(f"No data found in range {start_date} - {end_date} for {symbol} (Day file contained {len(data)} records)")
                         # Storage expects generic data save
                         if hasattr(self.storage, 'save_generic_data'):
                             self.storage.save_generic_data(data, data_type)
@@ -127,5 +159,14 @@ class BinanceBackfillService:
                 logger.error(f"Failed to backfill {data_type} for {symbol} on {current_date.date()}: {e}")
             
             current_date += timedelta(days=1)
+            
+            if bar:
+                self.progress_manager.update_bar(
+                    task_id=f"{self.exchange_name}_{symbol}_{data_type}",
+                    advance=1
+                )
+            
+        if bar:
+            self.progress_manager.close_bar(f"{self.exchange_name}_{symbol}_{data_type}")
             
         logger.info(f"{data_type} backfill complete for {symbol}")

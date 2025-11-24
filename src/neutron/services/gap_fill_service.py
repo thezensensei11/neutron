@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..core.downloader import Downloader
 from ..services.ohlcv_backfill import OHLCVBackfillService
-from ..core.exchange_state import ExchangeStateManager
+from ..core.state import ExchangeStateManager
 
 logger = logging.getLogger(__name__)
 

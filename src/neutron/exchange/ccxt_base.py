@@ -99,7 +99,7 @@ class CCXTExchange(Exchange):
         3. Probe yearly from 2011 to present.
         4. Metadata (if available).
         """
-        from ..core.exchange_state import ExchangeStateManager
+        from ..core.state import ExchangeStateManager
         state_manager = ExchangeStateManager()
         
         # Strategy 1: Check cache

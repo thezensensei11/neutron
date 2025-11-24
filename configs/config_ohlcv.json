@@ -1,0 +1,68 @@
+{
+    "data_state_path": "states/ohlcv_data_state.json",
+    "exchange_state_path": "states/exchange_state.json",
+    "max_workers": 8,
+    "storage": {
+        "ohlcv_path": "data/ohlcv",
+        "questdb_host": "localhost",
+        "questdb_ilp_port": 9009,
+        "questdb_pg_port": 8812
+    },
+    "tasks": [
+        {
+            "type": "backfill_ohlcv",
+            "params": {
+                "timeframe": "1m",
+                "start_date": "2025-01-01T00:00:00",
+                "end_date": "2025-05-11T00:00:00"
+            },
+            "exchanges": {
+                "binance": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    },
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT:USDT"
+                        ]
+                    }
+                },
+                "bitstamp": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USD"
+                        ]
+                    }
+                },
+                "bybit": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
+                    },
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT:USDT"
+                        ]
+                    }
+                },
+                "coinbase": {
+                    "spot": {
+                        "symbols": [
+                            "BTC/USD"
+                        ]
+                    }
+                },
+                "bitmex": {
+                    "swap": {
+                        "symbols": [
+                            "BTC/USD:BTC"
+                        ]
+                    }
+                }
+            }
+        }
+    ]
+}

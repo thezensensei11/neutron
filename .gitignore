@@ -141,3 +141,6 @@ uv.lock
 # Data
 data/*
 !data/.gitkeep
+
+# Temporary Reports
+report_output.txt

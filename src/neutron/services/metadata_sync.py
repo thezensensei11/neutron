@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from ..exchange import BinanceExchange
 from ..db.models import ExchangeMetadata, Symbol
 from ..db.session import ScopedSession
-from ..core.exchange_state import ExchangeStateManager
+from ..core.state import ExchangeStateManager
 
 logger = logging.getLogger(__name__)
 

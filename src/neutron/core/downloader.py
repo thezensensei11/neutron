@@ -4,10 +4,12 @@ from typing import Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import NeutronConfig, ConfigLoader
-from .state import DataStateManager
-from .tick_state import TickDataStateManager
-from .storage import StorageBackend, ParquetStorage
-from .questdb_storage import QuestDBStorage
+from .state import OHLCVStateManager, TickDataStateManager, ExchangeStateManager
+from .storage import StorageBackend
+from ..core.storage.questdb import QuestDBStorage
+from ..core.storage.parquet import ParquetStorage
+from ..services.questdb_loader import QuestDBLoader
+from .progress import ProgressManager
 from .config import NeutronConfig
 from ..db.session import engine
 from ..services.metadata_sync import MetadataService
@@ -19,7 +21,7 @@ from ..exchange.bitstamp import BitstampExchange
 logger = logging.getLogger(__name__)
 
 class Downloader:
-    def __init__(self, config_path: str = None, config: NeutronConfig = None, log_file: str = "ohlcvdata.log"):
+    def __init__(self, config_path: str = None, config: NeutronConfig = None, log_file: str = "logs/ohlcvdata.log"):
         self.config_loader = ConfigLoader()
         
         if config:
@@ -30,13 +32,13 @@ class Downloader:
             raise ValueError("Either config_path or config object must be provided")
 
         self.log_file = log_file
+        self.progress_manager = ProgressManager() # Initialize Progress Manager
         
         # Initialize State Managers with configured paths
-        self.ohlcv_state_manager = DataStateManager(state_file=self.config.data_state_path)
+        self.ohlcv_state_manager = OHLCVStateManager(state_file=self.config.data_state_path)
         self.tick_state_manager = TickDataStateManager(state_file=self.config.tick_data_state_path)
         
         # ExchangeStateManager is a singleton, so we initialize it here to ensure path is set if first time
-        from .exchange_state import ExchangeStateManager
         self.exchange_state_manager = ExchangeStateManager(state_file=self.config.exchange_state_path)
             
         self.exchange_cache = {}
@@ -61,12 +63,38 @@ class Downloader:
             database=self.config.storage.questdb_database
         )
         logger.info(f"Using QuestDB storage for Tick/Generic data at {self.config.storage.questdb_host}")
-            
+
+        # Parquet storage for tick/generic data (Source of Truth)
+        # Assuming a default path if not specified in config, or add to config
+        parquet_tick_path = getattr(self.config.storage, 'parquet_tick_path', "data/parquet_tick")
+        self.parquet_storage = ParquetStorage(base_dir=parquet_tick_path)
+        logger.info(f"Using Parquet storage for Tick/Generic data at {parquet_tick_path}")
+
+        # Initialize QuestDBLoader
+        self.questdb_loader = QuestDBLoader(self.parquet_storage, self.tick_storage)
+        logging.getLogger("neutron.services.questdb_loader").setLevel(logging.INFO)
+        
         self._setup_ohlcv_logger()
         self._setup_tick_logger()
+        self._setup_questdb_logger()
         
         self.ohlcv_logger = logging.getLogger("data_monitor")
         self.tick_logger = logging.getLogger("tick_monitor")
+
+    def _setup_questdb_logger(self):
+        """Setup the QuestDB logger."""
+        qdb_logger = logging.getLogger("neutron.core.storage.questdb")
+        qdb_logger.setLevel(logging.DEBUG)
+        qdb_logger.propagate = False
+        
+        log_path = "logs/questdb.log"
+        import os
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        
+        fh = logging.FileHandler(log_path)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        fh.setFormatter(formatter)
+        qdb_logger.addHandler(fh)
 
     def _setup_ohlcv_logger(self):
         """Setup the OHLCV data monitor logger globally."""
@@ -82,6 +110,8 @@ class Downloader:
             for h in data_logger.handlers:
                 data_logger.removeHandler(h)
                 
+            import os
+            os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
             fh = logging.FileHandler(self.log_file)
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             fh.setFormatter(formatter)
@@ -93,13 +123,15 @@ class Downloader:
         tick_logger.setLevel(logging.INFO)
         tick_logger.propagate = False
         
-        has_file_handler = any(isinstance(h, logging.FileHandler) and h.baseFilename.endswith("tickdata.log") for h in tick_logger.handlers)
+        has_file_handler = any(isinstance(h, logging.FileHandler) and h.baseFilename.endswith("logs/tickdata.log") for h in tick_logger.handlers)
         
         if not has_file_handler:
             for h in tick_logger.handlers:
                 tick_logger.removeHandler(h)
                 
-            fh = logging.FileHandler("tickdata.log")
+            import os
+            os.makedirs("logs", exist_ok=True)
+            fh = logging.FileHandler("logs/tickdata.log")
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             fh.setFormatter(formatter)
             tick_logger.addHandler(fh)
@@ -127,7 +159,8 @@ class Downloader:
             state_manager=self.tick_state_manager,
             exchange_name=exchange_name,
             instrument_type=instrument_type,
-            storage=self.tick_storage
+            storage=self.parquet_storage, # Use ParquetStorage for download
+            progress_manager=self.progress_manager
         )
 
         timeframe = params.get('timeframe', 'raw') # Default to 'raw' if no timeframe
@@ -166,6 +199,8 @@ class Downloader:
                 self._run_backfill_tick_data(task_params)
             elif task_type == 'backfill_funding':
                 self._run_backfill_funding(task_params)
+            elif task_type == 'load_questdb':
+                self._run_load_questdb(task_params)
             elif task_type in [
                 'backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation', 'backfill_metrics',
                 'backfill_book_depth', 'backfill_index_price_klines', 'backfill_mark_price_klines', 'backfill_premium_index_klines'
@@ -190,24 +225,8 @@ class Downloader:
     def run(self):
         """
         Execute all tasks defined in the configuration.
-        
-        Execution Strategy:
-        -------------------
-        1. Phase 1: OHLCV Data (The Foundation)
-           - Priority: Stability & Completeness.
-           - Parallelism: Per-Exchange.
-           - Logic: We run different exchanges in parallel (e.g., Binance worker, Bitstamp worker), 
-             but within each exchange, we process symbols sequentially. This respects rate limits 
-             and ensures the core dataset is built reliably without gaps.
-             
-        2. Phase 2: Generic Data (High Frequency)
-           - Priority: Throughput & Speed.
-           - Parallelism: Global / Per-Job.
-           - Logic: We flatten all requests (e.g., BTC Trades, ETH BookTicker) into individual units 
-             of work and blast them through a shared worker pool. This maximizes bandwidth and CPU 
-             usage for massive datasets.
         """
-        logger.info(f"Starting Neutron Downloader with {len(self.config.tasks)} tasks.")
+        self.progress_manager.log(f"Starting Neutron Downloader with {len(self.config.tasks)} tasks.")
         
         ohlcv_tasks = []
         generic_tasks = []
@@ -223,8 +242,8 @@ class Downloader:
         # Phase 1: OHLCV Tasks (Parallel Exchanges, Sequential Symbols)
         # ---------------------------------------------------------
         if ohlcv_tasks:
-            logger.info(f"Phase 1: Processing {len(ohlcv_tasks)} OHLCV tasks.")
-            logger.info("Strategy: Parallel Exchanges, Sequential Symbols within Exchange.")
+            self.progress_manager.log(f"Phase 1: Processing {len(ohlcv_tasks)} OHLCV tasks.")
+            self.progress_manager.log("Strategy: Parallel Exchanges, Sequential Symbols within Exchange.")
             
             # We use a separate executor for exchanges to ensure we don't overload connection pools
             # Default to 5 concurrent exchanges if not specified, usually enough.
@@ -256,8 +275,8 @@ class Downloader:
         # ---------------------------------------------------------
         if generic_tasks:
             max_workers = self.config.max_workers
-            logger.info(f"Phase 2: Processing {len(generic_tasks)} generic tasks.")
-            logger.info(f"Strategy: High-Throughput Parallelism (max_workers={max_workers}).")
+            self.progress_manager.log(f"Phase 2: Processing {len(generic_tasks)} generic tasks.")
+            self.progress_manager.log(f"Strategy: High-Throughput Parallelism (max_workers={max_workers}).")
             
             # Flatten generic tasks into individual units of work (per symbol)
             work_items = []
@@ -360,6 +379,7 @@ class Downloader:
 
     def _dispatch_task(self, task_type: str, params: Dict[str, Any]):
         try:
+            logger.info(f"Dispatching task: {task_type}")
             exchange_name = params.get('exchange', 'binance')
             instrument_type = params.get('instrument_type', 'spot')
             rewrite = params.get('rewrite', False)
@@ -414,6 +434,8 @@ class Downloader:
                 self._run_backfill_tick_data(params)
             elif task_type == "backfill_funding":
                 self._run_backfill_funding(params)
+            elif task_type == "load_questdb":
+                self._run_load_questdb(params)
             else:
                 logger.warning(f"Unknown task type: {task_type}")
         except Exception as e:
@@ -474,7 +496,7 @@ class Downloader:
             # Default fallback
             exchanges_to_sync = {'binance', 'bitstamp'} 
             
-        logger.info(f"Syncing metadata for exchanges: {exchanges_to_sync}")
+        self.progress_manager.log(f"Syncing metadata for exchanges: {exchanges_to_sync}")
         
         for exchange_name in exchanges_to_sync:
             try:
@@ -505,7 +527,8 @@ class Downloader:
         service = OHLCVBackfillService(
             exchange=exchange, 
             state_manager=self.ohlcv_state_manager,
-            storage=self.ohlcv_storage
+            storage=self.ohlcv_storage,
+            progress_manager=self.progress_manager # Pass progress manager
         )
         
         service.backfill_symbol(symbol, timeframe, start_date, end_date, instrument_type=instrument_type)
@@ -519,13 +542,51 @@ class Downloader:
         # This leverages Binance Vision files instead of API
         self._run_backfill_generic(params, 'fundingRate')
 
-if __name__ == "__main__":
+    def _run_load_questdb(self, params: Dict[str, Any]):
+        symbol = params.get('symbol')
+        exchange_name = params.get('exchange', 'binance')
+        start_date_str = params.get('start_date')
+        end_date_str = params.get('end_date')
+        instrument_type = params.get('instrument_type', 'spot')
+        data_type = params.get('data_type', 'aggTrades')
+        
+        if not (symbol and start_date_str and end_date_str):
+            logger.error("Missing required params for load_questdb")
+            return
+
+        start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
+        end_date = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
+        
+        if start_date.tzinfo is None: start_date = start_date.replace(tzinfo=timezone.utc)
+        if end_date.tzinfo is None: end_date = end_date.replace(tzinfo=timezone.utc)
+        
+        try:
+            self.questdb_loader.load_range(
+                exchange=exchange_name,
+                symbol=symbol,
+                data_type=data_type,
+                start_date=start_date,
+                end_date=end_date,
+                instrument_type=instrument_type
+            )
+        except Exception as e:
+            logger.error(f"Failed to load QuestDB: {e}")
+
+def main():
     import sys
-    logging.basicConfig(level=logging.INFO)
+    # Configure logging to file only or minimal console output
+    # Since we use tqdm, we want to avoid logger printing to stderr/stdout directly if possible
+    # But basicConfig sets up a StreamHandler by default if filename is not specified.
+    # We should probably set up a file handler here for the root logger or just rely on module loggers.
+    # For now, let's keep basicConfig but maybe raise level to WARNING for root to avoid spam
+    logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
     
     if len(sys.argv) < 2:
-        print("Usage: python -m neutron.core.downloader <config_path>")
+        print("Usage: neutron-backfill <config_path>")
         sys.exit(1)
         
     downloader = Downloader(sys.argv[1])
     downloader.run()
+
+if __name__ == "__main__":
+    main()

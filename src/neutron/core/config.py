@@ -23,9 +23,9 @@ class StorageConfig:
 class NeutronConfig:
     storage: StorageConfig
     tasks: List[TaskConfig]
-    data_state_path: str = "data_state.json"
-    tick_data_state_path: str = "tick_data_state.json"
-    exchange_state_path: str = "exchange_state.json"
+    data_state_path: str = "states/ohlcv_data_state.json"
+    tick_data_state_path: str = "states/tick_data_state.json"
+    exchange_state_path: str = "states/exchange_state.json"
     max_workers: int = 1
 
 class ConfigLoader:
@@ -33,7 +33,12 @@ class ConfigLoader:
     def load(config_path: str) -> NeutronConfig:
         """Load configuration from a JSON file."""
         if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Config file not found: {config_path}")
+            # Try looking in configs/ directory
+            alt_path = os.path.join("configs", config_path)
+            if os.path.exists(alt_path):
+                config_path = alt_path
+            else:
+                raise FileNotFoundError(f"Config file not found: {config_path}")
 
         with open(config_path, 'r') as f:
             data = json.load(f)
@@ -61,8 +66,8 @@ class ConfigLoader:
         return NeutronConfig(
             storage=storage_config,
             tasks=tasks,
-            data_state_path=data.get('data_state_path', 'data_state.json'),
-            tick_data_state_path=data.get('tick_data_state_path', 'tick_data_state.json'),
-            exchange_state_path=data.get('exchange_state_path', 'exchange_state.json'),
+            data_state_path=data.get('data_state_path', 'states/ohlcv_data_state.json'),
+            tick_data_state_path=data.get('tick_data_state_path', 'states/tick_data_state.json'),
+            exchange_state_path=data.get('exchange_state_path', 'states/exchange_state.json'),
             max_workers=data.get('max_workers', 1)
         )
