@@ -10,33 +10,24 @@ The configuration file controls:
 
 ### 1. Storage Configuration
 
-You can choose between storing data in a PostgreSQL database or as Parquet files on disk.
+Neutron now uses a **Dual Storage Architecture**:
+1.  **Parquet**: For OHLCV (Candlestick) data.
+2.  **QuestDB**: For Tick and Generic data (Trades, Order Books, etc.).
 
-#### Option A: Database Storage (Default)
-Stores data in the tables defined in `src/neutron/db/models.py`.
-
-```json
-"storage": {
-    "type": "database"
-},
-"database": {
-    "url": "postgresql://user:pass@localhost:5432/neutron"
-}
-```
-
-#### Option B: Parquet Storage
-Stores data as Parquet files in a structured directory tree.
+Both are configured simultaneously in the `storage` block:
 
 ```json
 "storage": {
-    "type": "parquet",
-    "path": "./Data"
+    "ohlcv_path": "data/ohlcv",       // Path for Parquet files
+    "questdb_host": "localhost",      // QuestDB Host
+    "questdb_ilp_port": 9009,         // Influx Line Protocol Port (Ingestion)
+    "questdb_pg_port": 8812           // PostgreSQL Wire Protocol Port (Querying)
 }
 ```
 
-**Directory Structure:**
-`{path}/{exchange}/{instrument_type}/{base_asset}/{data_type}/{date}.parquet`
-Example: `Data/binance/spot/BTC/aggTrades/2023-01-01.parquet`
+**Parquet Directory Structure:**
+`{ohlcv_path}/{exchange}/{instrument_type}/{base_asset}/{timeframe}/{date}.parquet`
+Example: `data/ohlcv/binance/spot/BTC/1h/2023-01-01.parquet`
 
 ---
 
