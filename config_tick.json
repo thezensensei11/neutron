@@ -1,6 +1,9 @@
 {
     "storage": {
-        "type": "database"
+        "ohlcv_path": "data/ohlcv",
+        "questdb_host": "localhost",
+        "questdb_ilp_port": 9009,
+        "questdb_pg_port": 8812
     },
     "data_state_path": "data_state.json",
     "exchange_state_path": "exchange_state.json",
@@ -18,82 +21,20 @@
                         "symbols": [
                             "BTC/USDT"
                         ]
+                    },
+                    "swap": {
+                        "symbols": [
+                            "BTC/USDT"
+                        ]
                     }
                 }
             }
         },
         {
-            "type": "backfill_book_ticker",
+            "type": "backfill_book_depth",
             "params": {
                 "start_date": "2025-11-01T00:00:00",
                 "end_date": "2025-11-05T00:00:00"
-            },
-            "exchanges": {
-                "binance": {
-                    "swap": {
-                        "symbols": [
-                            "BTC/USDT:USDT"
-                        ]
-                    }
-                }
-            }
-        },
-        {
-            "type": "backfill_mark_price_klines",
-            "params": {
-                "timeframe": "1h",
-                "start_date": "2025-11-01T00:00:00",
-                "end_date": "2025-11-02T00:00:00"
-            },
-            "exchanges": {
-                "binance": {
-                    "swap": {
-                        "symbols": [
-                            "BTC/USDT"
-                        ]
-                    }
-                }
-            }
-        },
-        {
-            "type": "backfill_index_price_klines",
-            "params": {
-                "timeframe": "1h",
-                "start_date": "2025-11-01T00:00:00",
-                "end_date": "2025-11-02T00:00:00"
-            },
-            "exchanges": {
-                "binance": {
-                    "swap": {
-                        "symbols": [
-                            "BTC/USDT"
-                        ]
-                    }
-                }
-            }
-        },
-        {
-            "type": "backfill_premium_index_klines",
-            "params": {
-                "timeframe": "1h",
-                "start_date": "2025-11-01T00:00:00",
-                "end_date": "2025-11-02T00:00:00"
-            },
-            "exchanges": {
-                "binance": {
-                    "swap": {
-                        "symbols": [
-                            "BTC/USDT"
-                        ]
-                    }
-                }
-            }
-        },
-        {
-            "type": "backfill_metrics",
-            "params": {
-                "start_date": "2025-11-01T00:00:00",
-                "end_date": "2025-11-02T00:00:00"
             },
             "exchanges": {
                 "binance": {

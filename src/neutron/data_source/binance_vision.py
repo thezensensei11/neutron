@@ -34,11 +34,13 @@ class BinanceVisionDownloader:
         },
         "bookTicker": {
             "path": "bookTicker",
-            "headers": ["update_id", "best_bid_price", "best_bid_qty", "best_ask_price", "best_ask_qty", "time", "symbol"], # Note: symbol might not be in CSV depending on file
-            # Actually bookTicker CSV usually: updateId, bestBidPrice, bestBidQty, bestAskPrice, bestAskQty, transactionTime, symbol
-            # Let's verify standard headers. 
-            # For now using standard assumption.
+            "headers": ["update_id", "best_bid_price", "best_bid_qty", "best_ask_price", "best_ask_qty", "time", "symbol"],
             "time_col": "time"
+        },
+        "bookDepth": {
+            "path": "bookDepth",
+            "headers": ["timestamp", "percentage", "depth", "notional"],
+            "time_col": "timestamp"
         },
         "liquidationSnapshot": {
             "path": "liquidationSnapshot",
@@ -214,7 +216,14 @@ class BinanceVisionDownloader:
                                 df[time_col] = pd.to_datetime(df[time_col])
                         else:
                             # Assume string date or already datetime
+                            # Assume string date or already datetime
                             df[time_col] = pd.to_datetime(df[time_col])
+            
+            # Normalize time column name to 'time'
+            if config and "time_col" in config:
+                time_col = config["time_col"]
+                if time_col != "time" and time_col in df.columns:
+                    df.rename(columns={time_col: "time"}, inplace=True)
             
             df['symbol'] = symbol
             df['exchange'] = 'binance'

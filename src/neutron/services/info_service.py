@@ -7,25 +7,28 @@ from ..core.storage import StorageBackend
 logger = logging.getLogger(__name__)
 
 class InfoService:
-    def __init__(self, storage: StorageBackend):
-        self.storage = storage
+    def __init__(self, storages: List[StorageBackend]):
+        self.storages = storages
 
     def generate_summary(self, deep_scan: bool = False, show_gaps: bool = False) -> str:
         """
         Generate a human-readable summary of available data.
         """
-        try:
-            data = self.storage.list_available_data(deep_scan=deep_scan)
-        except Exception as e:
-            logger.error(f"Failed to list available data: {e}")
-            return f"Error generating summary: {e}"
+        all_data = []
+        for storage in self.storages:
+            try:
+                data = storage.list_available_data(deep_scan=deep_scan)
+                all_data.extend(data)
+            except Exception as e:
+                logger.error(f"Failed to list available data from storage {storage}: {e}")
+                # Continue with other storages
         
-        if not data:
+        if not all_data:
             return "No data found in storage."
             
         # Group data by Exchange -> Instrument
         grouped = {}
-        for item in data:
+        for item in all_data:
             exchange = item.get('exchange', 'Unknown')
             instrument = item.get('instrument_type', 'Unknown')
             key = (exchange, instrument)
@@ -133,15 +136,17 @@ class InfoService:
         Generate a structured report of all gaps found in storage.
         Returns a list of dicts defining the gaps to be filled.
         """
-        try:
-            data = self.storage.list_available_data(deep_scan=deep_scan)
-        except Exception as e:
-            logger.error(f"Failed to list available data for gap report: {e}")
-            return []
-            
+        all_data = []
+        for storage in self.storages:
+            try:
+                data = storage.list_available_data(deep_scan=deep_scan)
+                all_data.extend(data)
+            except Exception as e:
+                logger.error(f"Failed to list available data for gap report from {storage}: {e}")
+
         gap_tasks = []
         
-        for item in data:
+        for item in all_data:
             gaps = item.get('gaps', [])
             if not gaps:
                 continue

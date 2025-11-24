@@ -6,7 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .config import NeutronConfig, ConfigLoader
 from .state import DataStateManager
 from .tick_state import TickDataStateManager
-from .storage import StorageBackend, DatabaseStorage, ParquetStorage
+from .storage import StorageBackend, ParquetStorage
+from .questdb_storage import QuestDBStorage
+from .config import NeutronConfig
 from ..db.session import engine
 from ..services.metadata_sync import MetadataService
 from ..services.ohlcv_backfill import OHLCVBackfillService
@@ -17,7 +19,7 @@ from ..exchange.bitstamp import BitstampExchange
 logger = logging.getLogger(__name__)
 
 class Downloader:
-    def __init__(self, config_path: str = None, config: NeutronConfig = None, log_file: str = "data.log"):
+    def __init__(self, config_path: str = None, config: NeutronConfig = None, log_file: str = "ohlcvdata.log"):
         self.config_loader = ConfigLoader()
         
         if config:
@@ -30,7 +32,7 @@ class Downloader:
         self.log_file = log_file
         
         # Initialize State Managers with configured paths
-        self.state_manager = DataStateManager(state_file=self.config.data_state_path)
+        self.ohlcv_state_manager = DataStateManager(state_file=self.config.data_state_path)
         self.tick_state_manager = TickDataStateManager(state_file=self.config.tick_data_state_path)
         
         # ExchangeStateManager is a singleton, so we initialize it here to ensure path is set if first time
@@ -39,26 +41,35 @@ class Downloader:
             
         self.exchange_cache = {}
         
-        # Initialize Storage Backend
-        if self.config.storage.type == "parquet":
-            if not self.config.storage.path:
-                raise ValueError("Storage path is required for parquet storage")
-            self.storage = ParquetStorage(self.config.storage.path)
-            logger.info(f"Using Parquet storage at {self.config.storage.path}")
-        else:
-            if self.config.storage.database_url:
-                from ..db.session import configure_db
-                configure_db(self.config.storage.database_url)
-                logger.info(f"Configured Database storage with URL: {self.config.storage.database_url}")
+        # Initialize Storage Backends (Dual Storage Strategy)
+        
+        # 1. OHLCV Storage -> Parquet
+        if not self.config.storage.ohlcv_path:
+             # Fallback or error? Config default is "data/ohlcv"
+             self.config.storage.ohlcv_path = "data/ohlcv"
+             
+        self.ohlcv_storage = ParquetStorage(self.config.storage.ohlcv_path)
+        logger.info(f"Using Parquet storage for OHLCV at {self.config.storage.ohlcv_path}")
+        
+        # 2. Tick/Generic Storage -> QuestDB
+        self.tick_storage = QuestDBStorage(
+            host=self.config.storage.questdb_host,
+            ilp_port=self.config.storage.questdb_ilp_port,
+            pg_port=self.config.storage.questdb_pg_port,
+            username=self.config.storage.questdb_username,
+            password=self.config.storage.questdb_password,
+            database=self.config.storage.questdb_database
+        )
+        logger.info(f"Using QuestDB storage for Tick/Generic data at {self.config.storage.questdb_host}")
             
-            self.storage = DatabaseStorage()
-            logger.info("Using Database storage")
-            
-        self._setup_data_logger()
+        self._setup_ohlcv_logger()
         self._setup_tick_logger()
+        
+        self.ohlcv_logger = logging.getLogger("data_monitor")
+        self.tick_logger = logging.getLogger("tick_monitor")
 
-    def _setup_data_logger(self):
-        """Setup the data monitor logger globally."""
+    def _setup_ohlcv_logger(self):
+        """Setup the OHLCV data monitor logger globally."""
         data_logger = logging.getLogger("data_monitor")
         data_logger.setLevel(logging.INFO)
         data_logger.propagate = False  # Prevent propagation to root logger
@@ -95,13 +106,20 @@ class Downloader:
 
     def _run_backfill_generic(self, params: Dict[str, Any], data_type: str):
         symbol = params.get('symbol')
-        start_date = datetime.fromisoformat(params.get('start_date'))
-        end_date = datetime.fromisoformat(params.get('end_date'))
-        rewrite = params.get('rewrite', False)
-        
-        exchange_name = params.get('exchange', 'binance')
+        exchange_name = params.get('exchange')
+        start_date = params.get('start_date')
+        end_date = params.get('end_date')
         instrument_type = params.get('instrument_type', 'spot')
-        
+        rewrite = params.get('rewrite', False)
+
+        if not (symbol and exchange_name and start_date and end_date):
+            self.tick_logger.error(f"Missing required params for {data_type} backfill")
+            return
+
+        if isinstance(start_date, str): start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        if isinstance(end_date, str): end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+
+        # Ensure timezone awareness
         if start_date.tzinfo is None: start_date = start_date.replace(tzinfo=timezone.utc)
         if end_date.tzinfo is None: end_date = end_date.replace(tzinfo=timezone.utc)
 
@@ -109,13 +127,14 @@ class Downloader:
             state_manager=self.tick_state_manager,
             exchange_name=exchange_name,
             instrument_type=instrument_type,
-            storage=self.storage
+            storage=self.tick_storage
         )
 
         timeframe = params.get('timeframe', 'raw') # Default to 'raw' if no timeframe
 
         if not rewrite:
-            check_end_date = end_date + timedelta(days=1)
+            # check_end_date should be end_date (exclusive)
+            # get_gaps expects exclusive end_date
             gaps = self.tick_state_manager.get_gaps(
                 exchange_name, 
                 instrument_type, 
@@ -123,17 +142,16 @@ class Downloader:
                 data_type,
                 timeframe, 
                 start_date, 
-                check_end_date
+                end_date
             )
             
             if not gaps:
-                logger.info(f"{data_type} already exists for {symbol}. Skipping.")
+                self.tick_logger.info(f"{data_type} already exists for {symbol}. Skipping.")
                 return
 
             for gap_start, gap_end in gaps:
-                current_gap_end = gap_end - timedelta(days=1)
-                if current_gap_end < gap_start: current_gap_end = gap_start
-                service.backfill_range(symbol, gap_start, current_gap_end, data_type, timeframe=timeframe)
+                # backfill_range expects exclusive end_date
+                service.backfill_range(symbol, gap_start, gap_end, data_type, timeframe=timeframe)
         else:
             service.backfill_range(symbol, start_date, end_date, data_type, timeframe=timeframe)
 
@@ -368,7 +386,7 @@ class Downloader:
 
                 # Smart Data State Check
                 if not rewrite and start_date and end_date:
-                    gaps = self.state_manager.get_gaps(
+                    gaps = self.ohlcv_state_manager.get_gaps(
                         exchange_name, 
                         instrument_type, 
                         symbol, 
@@ -486,8 +504,8 @@ class Downloader:
         exchange = self._get_exchange(exchange_name, instrument_type)
         service = OHLCVBackfillService(
             exchange=exchange, 
-            state_manager=self.state_manager,
-            storage=self.storage
+            state_manager=self.ohlcv_state_manager,
+            storage=self.ohlcv_storage
         )
         
         service.backfill_symbol(symbol, timeframe, start_date, end_date, instrument_type=instrument_type)

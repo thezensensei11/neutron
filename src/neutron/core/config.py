@@ -11,9 +11,13 @@ class TaskConfig:
 
 @dataclass
 class StorageConfig:
-    type: str = "database" # "database" or "parquet"
-    path: Optional[str] = None # for parquet
-    database_url: Optional[str] = None # for database
+    ohlcv_path: str = "data/ohlcv" # Path for Parquet storage (OHLCV)
+    questdb_host: str = "localhost"
+    questdb_ilp_port: int = 9009
+    questdb_pg_port: int = 8812
+    questdb_username: str = "admin"
+    questdb_password: str = "quest"
+    questdb_database: str = "qdb"
 
 @dataclass
 class NeutronConfig:
@@ -43,17 +47,15 @@ class ConfigLoader:
             ))
 
         storage_data = data.get('storage', {})
-        # Backwards compatibility: check root 'database' key if storage not present
-        if not storage_data and 'database' in data:
-            storage_data = {
-                'type': 'database',
-                'database_url': data['database'].get('url')
-            }
             
         storage_config = StorageConfig(
-            type=storage_data.get('type', 'database'),
-            path=storage_data.get('path'),
-            database_url=storage_data.get('database_url')
+            ohlcv_path=storage_data.get('ohlcv_path', 'data/ohlcv'),
+            questdb_host=storage_data.get('questdb_host', 'localhost'),
+            questdb_ilp_port=storage_data.get('questdb_ilp_port', 9009),
+            questdb_pg_port=storage_data.get('questdb_pg_port', 8812),
+            questdb_username=storage_data.get('questdb_username', 'admin'),
+            questdb_password=storage_data.get('questdb_password', 'quest'),
+            questdb_database=storage_data.get('questdb_database', 'qdb')
         )
 
         return NeutronConfig(

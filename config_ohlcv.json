@@ -3,18 +3,17 @@
     "exchange_state_path": "exchange_state.json",
     "max_workers": 8,
     "storage": {
-        "type": "database"
+        "ohlcv_path": "data/ohlcv",
+        "questdb_host": "localhost",
+        "questdb_ilp_port": 9009,
+        "questdb_pg_port": 8812
     },
     "tasks": [
-        {
-            "type": "sync_metadata",
-            "params": {}
-        },
         {
             "type": "backfill_ohlcv",
             "params": {
                 "timeframe": "1m",
-                "start_date": "2010-01-01T00:00:00",
+                "start_date": "2025-11-01T00:00:00",
                 "end_date": "2025-11-23T00:00:00"
             },
             "exchanges": {
