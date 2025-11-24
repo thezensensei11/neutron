@@ -47,7 +47,7 @@ Supports ingestion of various market data primitives:
 
 ---
 
-## 🚀 Installation
+## Installation
 
 Neutron is built with modern Python tooling. We recommend using `uv` for dependency management.
 
@@ -75,7 +75,7 @@ Neutron is built with modern Python tooling. We recommend using `uv` for depende
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Neutron is driven by a JSON configuration file (e.g., `configs/config.json`). This file defines storage settings and a list of tasks to execute.
 
@@ -123,7 +123,7 @@ Neutron is driven by a JSON configuration file (e.g., `configs/config.json`). Th
 
 ---
 
-## 💻 Usage
+## Usage
 
 ### Running the Downloader
 To start the ingestion process, run the `downloader` module with your configuration file:
@@ -166,7 +166,7 @@ df_trades = crawler.get_tick_data(
 
 ---
 
-## 📂 Code Structure
+##  Code Structure
 
 ```
 neutron/
@@ -186,4 +186,4 @@ neutron/
 
 ---
 
-*Built for the crypto quant community.*
+
