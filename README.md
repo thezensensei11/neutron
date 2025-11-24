@@ -6,7 +6,7 @@ Built with reliability and scalability in mind, Neutron handles the complexities
 
 ---
 
-##  Key Features
+## Key Features
 
 ### 1. Hybrid Storage Architecture
 Neutron leverages a dual-storage strategy to optimize for both speed and volume:
@@ -166,7 +166,7 @@ df_trades = crawler.get_tick_data(
 
 ---
 
-##  Code Structure
+## Code Structure
 
 ```
 neutron/
