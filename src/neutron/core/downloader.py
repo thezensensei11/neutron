@@ -10,11 +10,14 @@ from ..core.storage.questdb import QuestDBStorage
 from ..core.storage.parquet import ParquetStorage
 from ..services.questdb_loader import QuestDBLoader
 from .progress import ProgressManager
+from .logging_handler import TqdmLoggingHandler
 from .config import NeutronConfig
 from ..db.session import engine
 from ..services.metadata_sync import MetadataService
 from ..services.ohlcv_backfill import OHLCVBackfillService
 from ..services.binance_backfill import BinanceBackfillService
+from ..services.aggregator import OHLCVAggregatorService
+from ..services.synthetic import SyntheticOHLCVService
 from ..exchange.binance import BinanceExchange
 from ..exchange.bitstamp import BitstampExchange
 
@@ -73,6 +76,34 @@ class Downloader:
         # Initialize QuestDBLoader
         self.questdb_loader = QuestDBLoader(self.parquet_storage, self.tick_storage)
         logging.getLogger("neutron.services.questdb_loader").setLevel(logging.INFO)
+        
+        # Initialize Aggregator Service
+        # We pass the raw config dict or the config object? Service expects dict-like access for 'storage'
+        # Let's pass the config object but ensure service can handle it or convert to dict
+        # The service implementation used `config['storage']`, so we should pass a dict or ensure __getitem__ works
+        # NeutronConfig might not support __getitem__. Let's check or pass self.config.__dict__ or similar.
+        # Actually, looking at NeutronConfig, it's likely a Pydantic model or simple class.
+        # Let's pass a dict representation to be safe, or update service to use dot notation.
+        # Service uses `config['storage']`. Let's assume we can pass `self.config` if it supports it, 
+        # but to be safe let's pass the raw config dict if available or construct one.
+        # ConfigLoader loads into NeutronConfig. 
+        # Let's just update the Service to accept NeutronConfig or pass a dict wrapper.
+        # Easier: Pass a dict.
+        
+        agg_config = {
+            'storage': {
+                'ohlcv_path': self.config.storage.ohlcv_path,
+                'questdb_host': self.config.storage.questdb_host,
+                # Add other storage params if needed
+            },
+            'max_workers': self.config.max_workers
+        }
+        self.aggregator_service = OHLCVAggregatorService(agg_config)
+        logging.getLogger("neutron.services.aggregator").setLevel(logging.INFO)
+
+        # Initialize Synthetic Service
+        self.synthetic_service = SyntheticOHLCVService(agg_config)
+        logging.getLogger("neutron.services.synthetic").setLevel(logging.INFO)
         
         self._setup_ohlcv_logger()
         self._setup_tick_logger()
@@ -201,6 +232,10 @@ class Downloader:
                 self._run_backfill_funding(task_params)
             elif task_type == 'load_questdb':
                 self._run_load_questdb(task_params)
+            elif task_type == 'aggregate_ohlcv':
+                self._run_aggregate_ohlcv(task_params)
+            elif task_type == 'create_synthetic_ohlcv':
+                self._run_create_synthetic_ohlcv(task_params)
             elif task_type in [
                 'backfill_agg_trades', 'backfill_book_ticker', 'backfill_liquidation', 'backfill_metrics',
                 'backfill_book_depth', 'backfill_index_price_klines', 'backfill_mark_price_klines', 'backfill_premium_index_klines'
@@ -230,11 +265,17 @@ class Downloader:
         
         ohlcv_tasks = []
         generic_tasks = []
+        aggregator_tasks = []
+        synthetic_tasks = []
         
         # 1. Categorize Tasks
         for task in self.config.tasks:
             if task.type == 'backfill_ohlcv':
                 ohlcv_tasks.append(task)
+            elif task.type == 'aggregate_ohlcv':
+                aggregator_tasks.append(task)
+            elif task.type == 'create_synthetic_ohlcv':
+                synthetic_tasks.append(task)
             else:
                 generic_tasks.append(task)
                 
@@ -310,12 +351,38 @@ class Downloader:
                         except Exception as e:
                             logger.error(f"Generic Parallel Task failed: {e}")
 
+        # ---------------------------------------------------------
+        # Phase 3: Aggregation Tasks (Sequential)
+        # ---------------------------------------------------------
+        if aggregator_tasks:
+            self.progress_manager.log(f"Phase 3: Processing {len(aggregator_tasks)} aggregation tasks.")
+            self.progress_manager.log("Strategy: Sequential Execution (Post-Backfill).")
+            
+            for task in aggregator_tasks:
+                try:
+                    self._execute_single_task(task.type, task.params)
+                except Exception as e:
+                    logger.error(f"Aggregation Task failed: {e}")
+
+        # ---------------------------------------------------------
+        # Phase 4: Synthetic Creation Tasks (Sequential)
+        # ---------------------------------------------------------
+        if synthetic_tasks:
+            self.progress_manager.log(f"Phase 4: Processing {len(synthetic_tasks)} synthetic creation tasks.")
+            self.progress_manager.log("Strategy: Sequential Execution (Post-Aggregation).")
+            
+            for task in synthetic_tasks:
+                try:
+                    self._execute_single_task(task.type, task.params)
+                except Exception as e:
+                    logger.error(f"Synthetic Creation Task failed: {e}")
+
     def _process_exchange_sequentially(self, exchange_name: str, types: Dict[str, Any], task: Any):
         """
         Process all symbols for a single exchange sequentially.
         Used in Phase 1 to maintain stability and respect exchange-level constraints.
         """
-        logger.info(f"Starting sequential processing for exchange: {exchange_name}")
+        logger.debug(f"Starting sequential processing for exchange: {exchange_name}")
         for instrument_type, params in types.items():
             symbols = params.get('symbols', [])
             for symbol in symbols:
@@ -329,7 +396,7 @@ class Downloader:
                     self._execute_single_task(task.type, task_params)
                 except Exception as e:
                     logger.error(f"Failed processing {symbol} on {exchange_name}: {e}")
-        logger.info(f"Finished sequential processing for exchange: {exchange_name}")
+        logger.debug(f"Finished sequential processing for exchange: {exchange_name}")
 
     def _process_exchange_task(self, exchange_name: str, instruments: Dict[str, Any], task_type: str, global_params: Dict[str, Any]):
         """Process a single exchange's part of a task."""
@@ -445,7 +512,7 @@ class Downloader:
         """Get or create an exchange instance, caching it for reuse."""
         key = f"{exchange_name}_{instrument_type}"
         if key not in self.exchange_cache:
-            logger.info(f"Initializing new exchange instance for {key}")
+            logger.debug(f"Initializing new exchange instance for {key}")
             
             if exchange_name == "binance":
                 from ..exchange.binance import BinanceExchange
@@ -572,14 +639,40 @@ class Downloader:
         except Exception as e:
             logger.error(f"Failed to load QuestDB: {e}")
 
+    def _run_aggregate_ohlcv(self, params: Dict[str, Any]):
+        """
+        Executes the OHLCV aggregation task.
+        """
+        try:
+            self.aggregator_service.run(params)
+        except Exception as e:
+            logger.error(f"Failed to run OHLCV Aggregation: {e}")
+
+    def _run_create_synthetic_ohlcv(self, params: Dict[str, Any]):
+        """
+        Executes the Synthetic OHLCV creation task.
+        """
+        try:
+            self.synthetic_service.run(params)
+        except Exception as e:
+            logger.error(f"Failed to run Synthetic Creation: {e}")
+
 def main():
     import sys
     # Configure logging to file only or minimal console output
-    # Since we use tqdm, we want to avoid logger printing to stderr/stdout directly if possible
-    # But basicConfig sets up a StreamHandler by default if filename is not specified.
-    # We should probably set up a file handler here for the root logger or just rely on module loggers.
-    # For now, let's keep basicConfig but maybe raise level to WARNING for root to avoid spam
-    logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+    # Use TqdmLoggingHandler to play nicely with progress bars
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    
+    # Remove existing handlers
+    for h in root_logger.handlers:
+        root_logger.removeHandler(h)
+        
+    # Add TqdmHandler
+    tqdm_handler = TqdmLoggingHandler()
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    tqdm_handler.setFormatter(formatter)
+    root_logger.addHandler(tqdm_handler)
     
     if len(sys.argv) < 2:
         print("Usage: neutron-backfill <config_path>")

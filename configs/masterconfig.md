@@ -213,6 +213,45 @@ Tasks define the units of work for the downloader.
 }
 ```
 
+### 2.12 OHLCV Aggregator
+**Type**: `aggregate_ohlcv`
+**Description**: Aggregates 1-minute OHLCV data across all exchanges into a single "global" view.
+**Logic**: Price is VWAP, Volume is Sum.
+**Parameters**:
+- `rewrite` (boolean): If true, re-aggregates existing files.
+- `start_date`, `end_date` (optional): Restrict aggregation range.
+- `assets` (optional): List of assets to aggregate.
+**Note**: If no params provided, it runs in "Aggregate All" mode.
+
+```json
+{
+    "type": "aggregate_ohlcv",
+    "params": {
+        "rewrite": false
+    }
+}
+```
+
+### 2.13 Synthetic OHLCV Creation
+**Type**: `create_synthetic_ohlcv`
+**Description**: Creates a unified "Synthetic" dataset by merging Aggregated Spot and Aggregated Swap data.
+**Logic**:
+- **Price**: VWAP of Spot and Swap.
+- **Volume**: Sum of Spot and Swap.
+- **Features**: Adds `twap` and `vwap` columns `(O+H+L+C)/4`.
+**Parameters**:
+- `rewrite` (boolean): If true, recreates existing files.
+**Note**: Runs in Phase 4, strictly after Aggregation.
+
+```json
+{
+    "type": "create_synthetic_ohlcv",
+    "params": {
+        "rewrite": false
+    }
+}
+```
+
 ---
 
 ## 3. Master Configuration Example
@@ -367,6 +406,63 @@ This configuration includes **every possible task type** with **every possible p
                 "data_type": "aggTrades",
                 "start_date": "2024-01-01T00:00:00",
                 "end_date": "2024-01-02T00:00:00"
+            }
+        },
+        {
+            "type": "aggregate_ohlcv",
+            "params": {
+                "rewrite": false
+            }
+        },
+        {
+            "type": "create_synthetic_ohlcv",
+            "params": {
+                "rewrite": false
+            }
+        }
+    ]
+}
+```
+### 2.14 Resample OHLCV (DataProcessor)
+**Type**: `resample_ohlcv`
+**Description**: Resamples 1-minute synthetic OHLCV data into higher timeframes.
+**Logic**:
+- **OHLC**: Standard resampling.
+- **Volume**: Sum.
+- **TWAP**: Mean of 1m TWAPs.
+- **VWAP**: Volume-Weighted Mean of 1m VWAPs.
+**Parameters**:
+- `assets` (list): List of assets to resample (e.g., ["BTC", "ETH"]).
+- `timeframes` (list): List of target timeframes (e.g., ["5m", "1h", "1d"]).
+- `rewrite` (boolean): If true, overwrites existing files.
+
+```json
+{
+    "type": "resample_ohlcv",
+    "params": {
+        "assets": ["BTC"],
+        "timeframes": ["5m", "15m", "1h", "4h", "1d"],
+        "rewrite": false
+    }
+}
+```
+
+---
+
+## 3. DataProcessor Configuration
+
+The `DataProcessor` uses a separate configuration structure (or section) for post-processing tasks.
+
+```json
+{
+    "storage": { ... },
+    "processor_tasks": [
+        {
+            "type": "resample_ohlcv",
+            "params": {
+                "assets": ["BTC"],
+                "timeframes": ["5m", "1h"],
+                "rewrite": true
             }
         }
     ]

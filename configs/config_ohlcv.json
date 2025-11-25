@@ -13,8 +13,8 @@
             "type": "backfill_ohlcv",
             "params": {
                 "timeframe": "1m",
-                "start_date": "2025-01-01T00:00:00",
-                "end_date": "2025-05-11T00:00:00"
+                "start_date": "2025-11-01T00:00:00",
+                "end_date": "2025-11-25T00:00:00"
             },
             "exchanges": {
                 "binance": {
@@ -62,6 +62,18 @@
                         ]
                     }
                 }
+            }
+        },
+        {
+            "type": "aggregate_ohlcv",
+            "params": {
+                "rewrite": false
+            }
+        },
+        {
+            "type": "create_synthetic_ohlcv",
+            "params": {
+                "rewrite": false
             }
         }
     ]

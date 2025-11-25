@@ -59,9 +59,8 @@ class StateManager:
                 with open(self.state_file, 'r') as f:
                     content = f.read()
                     if not content.strip():
-                        logger.warning(f"State file {self.state_file} is empty (attempt {attempt+1}). Retrying...")
-                        time.sleep(0.2)
-                        continue
+                        # Empty file is treated as empty state, no need to retry or warn
+                        return {}
                     return json.loads(content)
             except json.JSONDecodeError as e:
                 logger.error(f"JSON decode error in {self.state_file} (attempt {attempt+1}): {e}")

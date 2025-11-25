@@ -376,8 +376,16 @@ class ParquetStorage(StorageBackend):
             report.end_date = full_df['time'].max()
             report.total_rows = len(full_df)
             
-            tf_map = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
-            seconds_per_candle = tf_map.get(timeframe)
+            # Dynamic timeframe parsing
+            seconds_per_candle = 0
+            if timeframe.endswith('m'):
+                seconds_per_candle = int(timeframe[:-1]) * 60
+            elif timeframe.endswith('h'):
+                seconds_per_candle = int(timeframe[:-1]) * 3600
+            elif timeframe.endswith('d'):
+                seconds_per_candle = int(timeframe[:-1]) * 86400
+            elif timeframe.endswith('w'):
+                seconds_per_candle = int(timeframe[:-1]) * 604800
             
             if seconds_per_candle:
                 expected_range = pd.date_range(

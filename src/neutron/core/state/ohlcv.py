@@ -69,7 +69,7 @@ class OHLCVStateManager(StateManager):
         if end_date.tzinfo is None:
             end_date = end_date.replace(tzinfo=timezone.utc)
 
-        logger.info(f"Updating state for {exchange} {instrument_type} {symbol} {timeframe}: {start_date} - {end_date}")
+        logger.debug(f"Updating state for {exchange} {instrument_type} {symbol} {timeframe}: {start_date} - {end_date}")
 
         def updater(state):
             if exchange not in state: state[exchange] = {}
