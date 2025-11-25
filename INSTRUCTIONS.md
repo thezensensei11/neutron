@@ -30,7 +30,7 @@ To set up Neutron on a new machine (e.g., a fresh server or a colleague's laptop
 
 ## 2. Usage
 
-### Running Backfills
+### Running Backfills & Aggregation
 The primary way to run Neutron is via the `run_backfill.sh` script. This script handles environment activation and prevents system sleep on macOS (`caffeinate`).
 
 ```bash
@@ -39,7 +39,7 @@ The primary way to run Neutron is via the `run_backfill.sh` script. This script 
 
 Alternatively, you can run directly with `uv`:
 ```bash
-uv run neutron-backfill configs/config_tick.json
+uv run python -m neutron.core.downloader configs/config.json
 ```
 
 ### Data Quality Checks
@@ -47,6 +47,13 @@ To verify the integrity of your downloaded data and view rich analytics (Volume,
 
 ```bash
 uv run python scripts/data_quality_check.py
+```
+
+### Validating Synthetic Data
+To validate the accuracy of the synthetic data aggregation against raw trade data (True VWAP):
+
+```bash
+uv run python scripts/analyze_vwap.py
 ```
 
 ### Logs

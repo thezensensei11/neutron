@@ -15,6 +15,7 @@ def verify_dual_crawler():
     # We assume standard paths used in backfill
     crawler = DataCrawler(
         ohlcv_path="data/ohlcv",
+        aggregated_path="data/aggregated",
         questdb_config={
             'host': 'localhost',
             'ilp_port': 9009,

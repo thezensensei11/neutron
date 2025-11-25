@@ -15,15 +15,17 @@ class DataCrawler:
     Acts as a facade over the storage backend.
     """
 
-    def __init__(self, ohlcv_path: Optional[str] = None, questdb_config: Optional[Dict] = None):
+    def __init__(self, ohlcv_path: Optional[str] = None, aggregated_path: Optional[str] = None, questdb_config: Optional[Dict] = None):
         """
         Initialize the DataCrawler with dual storage support.
         
         Args:
             ohlcv_path: Path to parquet data directory for OHLCV
+            aggregated_path: Path to parquet data directory for Aggregated/Synthetic data
             questdb_config: Dict with host, ilp_port, pg_port for QuestDB (Tick/Generic)
         """
         self.ohlcv_storage: Optional[ParquetStorage] = None
+        self.aggregated_storage: Optional[ParquetStorage] = None
         self.tick_storage: Optional[QuestDBStorage] = None
         
         # Initialize OHLCV Storage (Parquet)
@@ -32,6 +34,11 @@ class DataCrawler:
             logger.info(f"DataCrawler initialized with Parquet storage at {ohlcv_path}")
         else:
             logger.warning("No OHLCV path provided. OHLCV data retrieval will fail.")
+
+        # Initialize Aggregated Storage (Parquet)
+        if aggregated_path:
+            self.aggregated_storage = ParquetStorage(aggregated_path, is_aggregated=True)
+            logger.info(f"DataCrawler initialized with Aggregated storage at {aggregated_path}")
 
         # Initialize Tick Storage (QuestDB)
         if questdb_config:
@@ -51,8 +58,12 @@ class DataCrawler:
         """
         config = ConfigLoader.load(config_path)
         
+        # Aggregated path might not be in config object if it's new, check dict or attribute
+        agg_path = getattr(config.storage, 'aggregated_path', 'data/aggregated')
+        
         return cls(
             ohlcv_path=config.storage.ohlcv_path,
+            aggregated_path=agg_path,
             questdb_config={
                 'host': config.storage.questdb_host,
                 'ilp_port': config.storage.questdb_ilp_port,
@@ -218,6 +229,7 @@ class DataCrawler:
         from ..services.info_service import InfoService
         storages = []
         if self.ohlcv_storage: storages.append(self.ohlcv_storage)
+        if self.aggregated_storage: storages.append(self.aggregated_storage)
         if self.tick_storage: storages.append(self.tick_storage)
         return InfoService(storages)
 

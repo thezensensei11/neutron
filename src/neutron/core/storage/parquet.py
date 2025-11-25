@@ -8,17 +8,22 @@ from .base import StorageBackend, DataQualityReport
 logger = logging.getLogger(__name__)
 
 class ParquetStorage(StorageBackend):
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, is_aggregated: bool = False):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.is_aggregated = is_aggregated
 
     def _get_path(self, exchange: str, instrument_type: str, symbol: str, timeframe: str, date: datetime) -> Path:
         # Parse base asset from symbol (e.g., BTC/USDT -> BTC)
         base_asset = symbol.split('/')[0]
-        # Sanitize symbol for filename if needed, but directory structure handles most
         
-        # Structure: Data/exchange/instrument/base_asset/frequency/date.parquet
-        path = self.base_dir / exchange / instrument_type / base_asset / timeframe
+        if self.is_aggregated:
+            # Structure: Data/instrument_type/base_asset/timeframe/date.parquet
+            path = self.base_dir / instrument_type / base_asset / timeframe
+        else:
+            # Structure: Data/exchange/instrument/base_asset/frequency/date.parquet
+            path = self.base_dir / exchange / instrument_type / base_asset / timeframe
+            
         path.mkdir(parents=True, exist_ok=True)
         
         filename = f"{date.strftime('%Y-%m-%d')}.parquet"
@@ -54,7 +59,7 @@ class ParquetStorage(StorageBackend):
             else:
                 save_df.to_parquet(path)
                 
-        logger.info(f"Saved {len(data)} OHLCV records to parquet.")
+        logger.debug(f"Saved {len(data)} OHLCV records to parquet.")
 
     def save_tick_data(self, data: List[Dict[str, Any]]):
         if not data:
@@ -82,7 +87,7 @@ class ParquetStorage(StorageBackend):
             else:
                 save_df.to_parquet(path)
                 
-        logger.info(f"Saved {len(data)} tick records to parquet.")
+        logger.debug(f"Saved {len(data)} tick records to parquet.")
 
     def save_funding_rates(self, data: List[Dict[str, Any]]):
         if not data:
@@ -177,7 +182,7 @@ class ParquetStorage(StorageBackend):
             else:
                 save_df.to_parquet(path, index=False)
         
-        logger.info(f"Saved {len(data)} {data_type} records to parquet.")
+        logger.debug(f"Saved {len(data)} {data_type} records to parquet.")
 
     def _load_parquet_range(self, exchange: str, symbol: str, timeframe: str, start_date: datetime, end_date: datetime, instrument_type: str) -> pd.DataFrame:
         dfs = []
@@ -235,11 +240,9 @@ class ParquetStorage(StorageBackend):
         if not self.base_dir.exists():
             return results
             
-        for exchange_path in self.base_dir.iterdir():
-            if not exchange_path.is_dir(): continue
-            exchange = exchange_path.name
-            
-            for instrument_path in exchange_path.iterdir():
+        if self.is_aggregated:
+            # 3-Level Structure: InstrumentType / Symbol / Timeframe
+            for instrument_path in self.base_dir.iterdir():
                 if not instrument_path.is_dir(): continue
                 instrument = instrument_path.name
                 
@@ -251,6 +254,7 @@ class ParquetStorage(StorageBackend):
                         if not category_path.is_dir(): continue
                         category = category_path.name 
                         
+                        # In aggregated, category is usually timeframe (1m)
                         is_timeframe = category[0].isdigit()
                         data_type = 'ohlcv' if is_timeframe else category
                         timeframe = category if is_timeframe else None
@@ -258,42 +262,71 @@ class ParquetStorage(StorageBackend):
                         files = list(category_path.glob('*.parquet'))
                         if not files: continue
                         
-                        dates = []
-                        total_rows = 0
+                        self._process_files_for_list(files, "aggregated", symbol, instrument, data_type, timeframe, deep_scan, results)
+        else:
+            # 4-Level Structure: Exchange / InstrumentType / Symbol / Timeframe
+            for exchange_path in self.base_dir.iterdir():
+                if not exchange_path.is_dir(): continue
+                exchange = exchange_path.name
+                
+                for instrument_path in exchange_path.iterdir():
+                    if not instrument_path.is_dir(): continue
+                    instrument = instrument_path.name
+                    
+                    for asset_path in instrument_path.iterdir():
+                        if not asset_path.is_dir(): continue
+                        symbol = asset_path.name 
                         
-                        for f in files:
-                            try:
-                                date_str = f.stem
-                                dates.append(datetime.strptime(date_str, "%Y-%m-%d").date())
-                                
-                                if deep_scan:
-                                    try:
-                                        meta = pd.read_parquet(f, columns=[])
-                                        total_rows += len(meta)
-                                    except:
-                                        pass
-                            except:
-                                pass
-                        
-                        if not dates: continue
-                        
-                        min_date = min(dates)
-                        max_date = max(dates)
-                        
-                        results.append({
-                            'exchange': exchange,
-                            'symbol': symbol,
-                            'instrument_type': instrument,
-                            'data_type': data_type,
-                            'timeframe': timeframe,
-                            'start_date': min_date,
-                            'end_date': max_date,
-                            'count': total_rows if deep_scan else len(files),
-                            'count_unit': 'rows' if deep_scan else 'days',
-                            'gaps': []
-                        })
+                        for category_path in asset_path.iterdir():
+                            if not category_path.is_dir(): continue
+                            category = category_path.name 
+                            
+                            is_timeframe = category[0].isdigit()
+                            data_type = 'ohlcv' if is_timeframe else category
+                            timeframe = category if is_timeframe else None
+                            
+                            files = list(category_path.glob('*.parquet'))
+                            if not files: continue
+                            
+                            self._process_files_for_list(files, exchange, symbol, instrument, data_type, timeframe, deep_scan, results)
                         
         return results
+
+    def _process_files_for_list(self, files, exchange, symbol, instrument, data_type, timeframe, deep_scan, results):
+        dates = []
+        total_rows = 0
+        
+        for f in files:
+            try:
+                date_str = f.stem
+                dates.append(datetime.strptime(date_str, "%Y-%m-%d").date())
+                
+                if deep_scan:
+                    try:
+                        meta = pd.read_parquet(f, columns=[])
+                        total_rows += len(meta)
+                    except:
+                        pass
+            except:
+                pass
+        
+        if not dates: return
+        
+        min_date = min(dates)
+        max_date = max(dates)
+        
+        results.append({
+            'exchange': exchange,
+            'symbol': symbol,
+            'instrument_type': instrument,
+            'data_type': data_type,
+            'timeframe': timeframe,
+            'start_date': min_date,
+            'end_date': max_date,
+            'count': total_rows if deep_scan else len(files),
+            'count_unit': 'rows' if deep_scan else 'days',
+            'gaps': []
+        })
 
     def analyze_ohlcv_quality(self, exchange: str, symbol: str, timeframe: str, instrument_type: str = 'spot') -> DataQualityReport:
         report = DataQualityReport(
@@ -304,7 +337,11 @@ class ParquetStorage(StorageBackend):
             timeframe=timeframe
         )
         
-        base_path = self.base_dir / exchange / instrument_type / symbol.split('/')[0] / timeframe
+        if self.is_aggregated:
+             base_path = self.base_dir / instrument_type / symbol.split('/')[0] / timeframe
+        else:
+             base_path = self.base_dir / exchange / instrument_type / symbol.split('/')[0] / timeframe
+             
         if not base_path.exists():
             return report
             
