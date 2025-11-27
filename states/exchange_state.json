@@ -1,0 +1,43 @@
+{
+  "coinbase": {
+    "spot": {
+      "ETH/USD": {
+        "listing_date": "2016-09-29T00:00:00+00:00"
+      },
+      "BTC/USD": {
+        "listing_date": "2015-08-01T00:00:00+00:00"
+      }
+    }
+  },
+  "bitstamp": {
+    "spot": {
+      "BTC/USD": {
+        "listing_date": "2011-09-01T00:00:00+00:00"
+      },
+      "XRP/USD": {
+        "listing_date": "2017-01-01T00:00:00+00:00"
+      }
+    }
+  },
+  "bybit": {
+    "spot": {
+      "BTC/USDT": {
+        "listing_date": "2021-07-05T12:00:00+00:00"
+      },
+      "ETH/USDT": {
+        "listing_date": "2021-07-05T12:00:00+00:00"
+      }
+    },
+    "swap": {
+      "BTC/USDT:USDT": {
+        "listing_date": "2020-03-25T10:36:00+00:00"
+      },
+      "ETH/USDT:USDT": {
+        "listing_date": "2021-03-15T00:00:00+00:00"
+      },
+      "HYPE/USDT:USDT": {
+        "listing_date": "2024-12-05T12:55:00+00:00"
+      }
+    }
+  }
+}

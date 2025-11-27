@@ -24,7 +24,7 @@ class ExchangeStateManager(StateManager):
                     cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, state_file: str = "exchange_state.json"):
+    def __init__(self, state_file: str = "states/exchange_state.json"):
         if getattr(self, '_initialized', False):
             return
         super().__init__(state_file)

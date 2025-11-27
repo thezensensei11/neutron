@@ -2,8 +2,10 @@ import logging
 import json
 from pathlib import Path
 from typing import Dict, List, Any
+import pandas as pd
 
 from ..services.resampler import ResamplerService
+from ..services.slider import SliderService
 from .config import ConfigLoader
 
 logger = logging.getLogger(__name__)
@@ -16,9 +18,11 @@ class DataProcessor:
     def __init__(self, config_path: str):
         self.config_path = config_path
         self.config = self._load_config(config_path)
+        # self.config = ConfigLoader.load(config_path) # Removed to keep config as dict
         
         # Initialize Services
         self.resampler_service = ResamplerService(self.config)
+        self.slider_service = SliderService(self.config)
 
     def _load_config(self, path: str) -> Dict[str, Any]:
         """
@@ -53,6 +57,9 @@ class DataProcessor:
                 if task_type == 'resample_ohlcv':
                     task_results = self._run_resample_ohlcv(params)
                     results[task_type] = task_results
+                elif task_type == 'create_sliding_dataset':
+                    task_results = self._run_create_sliding_dataset(params)
+                    results[task_type] = task_results
                 else:
                     logger.warning(f"Unknown task type: {task_type}")
             except Exception as e:
@@ -69,6 +76,13 @@ class DataProcessor:
         """
         logger.info(">>> Task: Resample OHLCV")
         return self.resampler_service.run(params)
+
+    def _run_create_sliding_dataset(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Runs the Slider Service to create a sliding dataset.
+        """
+        logger.info(">>> Task: Create Sliding Dataset")
+        return self.slider_service.run(params)
 
 if __name__ == "__main__":
     import sys

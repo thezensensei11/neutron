@@ -105,18 +105,29 @@ class CCXTExchange(Exchange):
         # Strategy 1: Check cache
         cached_date = state_manager.get_listing_date(self.exchange_id, self.default_type, symbol)
         if cached_date:
-            logger.info(f"[{self.exchange_id}] Found listing date for {symbol} in cache: {cached_date}")
+            logger.debug(f"[{self.exchange_id}] Found listing date for {symbol} in cache: {cached_date}")
             return cached_date
 
         # Strategy 2: Probe from timestamp 0
+        # Strategy 2: Probe from timestamp 0
         if self.supports_fetch_since_0:
             try:
-                ohlcv = self.client.fetch_ohlcv(symbol, '1d', since=0, limit=1)
-                if ohlcv:
-                    found_date = datetime.fromtimestamp(ohlcv[0][0] / 1000, tz=timezone.utc)
-                    logger.info(f"[{self.exchange_id}] Found listing date for {symbol} at {found_date} (probed 0)")
-                    state_manager.set_listing_date(self.exchange_id, self.default_type, symbol, found_date)
-                    return found_date
+                # Step 1: Find the day using 1d candles (reliable)
+                ohlcv_daily = self.client.fetch_ohlcv(symbol, '1d', since=0, limit=1)
+                if ohlcv_daily:
+                    daily_ts = ohlcv_daily[0][0]
+                    
+                    # Step 2: Find the exact minute using 1m candles starting from that day
+                    # We use the daily timestamp as the start point
+                    ohlcv_minute = self.client.fetch_ohlcv(symbol, '1m', since=daily_ts, limit=1)
+                    
+                    if ohlcv_minute:
+                        candle = ohlcv_minute[0]
+                        if not any(x is None for x in candle[1:5]):
+                            found_date = datetime.fromtimestamp(candle[0] / 1000, tz=timezone.utc)
+                            logger.debug(f"[{self.exchange_id}] Found listing date for {symbol} at {found_date} (probed 0)")
+                            state_manager.set_listing_date(self.exchange_id, self.default_type, symbol, found_date)
+                            return found_date
             except Exception as e:
                 pass # Expected for some exchanges
 
@@ -124,21 +135,68 @@ class CCXTExchange(Exchange):
         current_year = datetime.now().year
         for year in range(2011, current_year + 1):
             try:
-                logger.info(f"[{self.exchange_id}] Probing listing date for {symbol} at year {year}...")
+                logger.debug(f"[{self.exchange_id}] Probing listing date for {symbol} at year {year}...")
                 since_ts = int(datetime(year, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
-                ohlcv = self.client.fetch_ohlcv(symbol, '1d', since=since_ts, limit=1)
-                if ohlcv:
-                    found_date = datetime.fromtimestamp(ohlcv[0][0] / 1000, tz=timezone.utc)
-                    
+                
+                # Step 1: Find the day using 1d candles
+                ohlcv_daily = self.client.fetch_ohlcv(symbol, '1d', since=since_ts, limit=1)
+                
+                if ohlcv_daily:
+                    daily_ts = ohlcv_daily[0][0]
+                    found_date_daily = datetime.fromtimestamp(daily_ts / 1000, tz=timezone.utc)
+
                     # Validate returned date is close to requested year
-                    # Some exchanges return the LATEST candle if 'since' is too old
-                    if found_date.year - year > 1:
-                        # logger.debug(f"[{self.exchange_id}] Ignoring candle at {found_date} for probe year {year} (too recent)")
+                    if found_date_daily.year - year > 1:
                         continue
 
-                    logger.info(f"[{self.exchange_id}] Found listing date for {symbol} at {found_date} (probed {year})")
-                    state_manager.set_listing_date(self.exchange_id, self.default_type, symbol, found_date)
-                    return found_date
+                    # Recursive Lookback Strategy:
+                    # Once we find data, keep looking back month-by-month across years until we hit a wall.
+                    current_probe_year = year
+                    current_probe_month = 1 # Start looking back from the beginning of the found year
+                    
+                    # Actually, we found data at `daily_ts` (which is near `year`-01-01).
+                    # So we should start looking back from `year`-1, Dec.
+                    
+                    probe_year = year - 1
+                    probe_month = 12
+                    
+                    while probe_year >= 2009:
+                        try:
+                            probe_dt = datetime(probe_year, probe_month, 1, tzinfo=timezone.utc)
+                            probe_ts = int(probe_dt.timestamp() * 1000)
+                            
+                            # Probe this month
+                            month_candles = self.client.fetch_ohlcv(symbol, '1d', since=probe_ts, limit=1)
+                            if month_candles:
+                                # Found earlier data! Update daily_ts and continue looking back
+                                daily_ts = month_candles[0][0]
+                                logger.debug(f"[{self.exchange_id}] Found earlier data at {datetime.fromtimestamp(daily_ts/1000, timezone.utc)} (probed {probe_year}-{probe_month})")
+                                
+                                # Move to previous month
+                                probe_month -= 1
+                                if probe_month < 1:
+                                    probe_month = 12
+                                    probe_year -= 1
+                            else:
+                                # No data in this month, so the listing must be after this month.
+                                # We stop looking back.
+                                break
+                        except Exception as e:
+                            logger.debug(f"[{self.exchange_id}] Lookback probe failed for {probe_year}-{probe_month}: {e}")
+                            break
+
+                    # Step 2: Find the exact minute using 1m candles
+                    ohlcv_minute = self.client.fetch_ohlcv(symbol, '1m', since=daily_ts, limit=1)
+                    
+                    if ohlcv_minute:
+                        candle = ohlcv_minute[0]
+                        if any(x is None for x in candle[1:5]):
+                            continue
+
+                        found_date = datetime.fromtimestamp(candle[0] / 1000, tz=timezone.utc)
+                        logger.debug(f"[{self.exchange_id}] Found listing date for {symbol} at {found_date} (probed {year} + lookback)")
+                        state_manager.set_listing_date(self.exchange_id, self.default_type, symbol, found_date)
+                        return found_date
             except Exception as e:
                 # logger.debug(f"[{self.exchange_id}] Probe failed for {symbol} at year {year}: {e}")
                 continue

@@ -14,7 +14,7 @@ class ProgressManager:
         self._lock = threading.RLock()
         self._position_counter = 0
 
-    def create_bar(self, task_id: str, desc: str, total: Optional[int] = None, unit: str = "it") -> tqdm:
+    def create_bar(self, task_id: str, desc: str, total: Optional[int] = None, unit: str = "it", leave: bool = True) -> tqdm:
         """
         Create a new progress bar.
         """
@@ -28,7 +28,7 @@ class ProgressManager:
                 desc=desc,
                 unit=unit,
                 position=self._position_counter,
-                leave=True, # Keep bar after completion
+                leave=leave, # Configurable leave behavior
                 dynamic_ncols=True
             )
             self._bars[task_id] = bar

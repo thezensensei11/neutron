@@ -136,8 +136,17 @@ class SyntheticOHLCVService:
             result = pd.DataFrame(index=all_times)
             
             # --- Volume Aggregation (Sum) ---
-            v_spot = spot_aligned['volume'].fillna(0)
-            v_swap = swap_aligned['volume'].fillna(0)
+            # Handle missing volume column gracefully
+            if 'volume' in spot_aligned.columns:
+                v_spot = spot_aligned['volume'].fillna(0)
+            else:
+                v_spot = pd.Series(0, index=all_times)
+                
+            if 'volume' in swap_aligned.columns:
+                v_swap = swap_aligned['volume'].fillna(0)
+            else:
+                v_swap = pd.Series(0, index=all_times)
+
             total_volume = v_spot + v_swap
             result['volume'] = total_volume
             
@@ -147,8 +156,8 @@ class SyntheticOHLCVService:
             # If total volume is 0, we fallback to average of prices.
             
             for col in ['open', 'high', 'low', 'close']:
-                p_spot = spot_aligned[col]
-                p_swap = swap_aligned[col]
+                p_spot = spot_aligned[col] if col in spot_aligned.columns else pd.Series(np.nan, index=all_times)
+                p_swap = swap_aligned[col] if col in swap_aligned.columns else pd.Series(np.nan, index=all_times)
                 
                 # Weighted Sum Numerator
                 # Handle NaNs in Price: if Price is NaN, treat as if Volume was 0 for that component (effectively ignoring it)
@@ -201,14 +210,24 @@ class SyntheticOHLCVService:
                 
                 result[col] = vwap_price
                 
-            # Fill remaining NaNs with 0 (gaps where no data existed in either)
-            # User requirement: "if there re gaps in the middle... leave those rows as 0"
-            # Our outer join created rows for all times. If a time had data in neither (impossible by definition of union index),
-            # but if we had NaNs in source data, they might propagate.
-            # However, if we have a row in the index, it came from SOMEWHERE.
-            # If it came from Spot but Spot had NaNs? Unlikely for aggregated data.
-            # But let's be safe.
-            result.fillna(0, inplace=True)
+            # Fill remaining NaNs
+            # For Volume: Fill with 0 (no volume during gap)
+            result['volume'] = result['volume'].fillna(0)
+            
+            # For Prices: Forward Fill (propagate last known price)
+            # If gap is at start, backfill (rare but possible)
+            for col in ['open', 'high', 'low', 'close']:
+                result[col] = result[col].ffill()
+                result[col] = result[col].bfill() # Fallback for start
+            
+            # Recalculate TWAP/VWAP for filled rows if they are NaN
+            # If we ffilled prices, TWAP/VWAP should also be consistent with those prices
+            # Simplest is to recalculate them based on the filled OHLC
+            # But wait, we calculate them below in lines 217-219.
+            # So we just need to ensure OHLC are filled first.
+            
+            # Note: If we ffill prices, it means "no trade happened, price stays same".
+            # This is better than 0.
             
             # --- Feature Engineering ---
             # twap = (o+h+l+c)/4
@@ -217,6 +236,9 @@ class SyntheticOHLCVService:
             ohlc_avg = (result['open'] + result['high'] + result['low'] + result['close']) / 4
             result['twap'] = ohlc_avg
             result['vwap'] = ohlc_avg # Explicit user request
+            
+            # Quote Volume = mean(ohlc) * volume (User Definition)
+            result['quote_volume'] = ohlc_avg * result['volume']
             
             # Metadata
             result.reset_index(inplace=True)
@@ -227,7 +249,7 @@ class SyntheticOHLCVService:
             result['exchange'] = 'aggregated'
             
             # Rounding to 2 decimal places
-            numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'twap', 'vwap']
+            numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'twap', 'vwap']
             result[numeric_cols] = result[numeric_cols].round(2)
             
             # Enforce High/Low consistency after rounding

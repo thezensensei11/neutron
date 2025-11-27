@@ -165,14 +165,46 @@ class OHLCVAggregatorService:
                     if not df.empty:
                         # Normalize Volume for BitMEX (USD Contracts -> BTC)
                         # Check symbol before filtering columns
-                        if exc == 'bitmex' and 'symbol' in df.columns:
+                        # EXCLUDE SPOT: Spot volume is always in Base currency, so no normalization needed.
+                        if exc == 'bitmex' and 'symbol' in df.columns and instrument_type != 'spot':
                             first_sym = df['symbol'].iloc[0]
-                            # BitMEX XBTUSD (BTC/USD) is inverse, Volume is in USD.
-                            # Linear contracts usually have USDT.
-                            if 'USD' in first_sym and 'USDT' not in first_sym:
-                                # Quote Volume (BTC) = Volume_USD / Avg_Price
-                                avg_price = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-                                df['volume'] = df['volume'] / avg_price
+                            # BitMEX Inverse Perps handling
+                            # Symbols like BTC/USD, ETH/USD, BTC/USD:BTC, ETH/USD:ETH
+                            # These have Volume in USD (Quote currency).
+                            # We need to convert to Base currency (BTC, ETH) for consistency with other exchanges.
+                            
+                            # Robust check: Quote currency must be 'USD'
+                            # Handle cases like 'BTC/USD:BTC' -> base='BTC', quote_part='USD:BTC'
+                            try:
+                                if '/' in first_sym:
+                                    base, quote_part = first_sym.split('/', 1)
+                                    is_inverse_usd = False
+                                    
+                                    # Logic:
+                                    # 1. If colon exists (e.g. :BTC), check settlement currency.
+                                    #    If settlement is NOT USD/USDT/USDC, it's inverse.
+                                    # 2. If no colon (e.g. BTC/USD), and quote is USD, assume Inverse for BitMEX.
+                                    
+                                    if ':' in quote_part:
+                                        quote_currency, settlement = quote_part.split(':', 1)
+                                        # List of USD-pegged settlement currencies (Linear)
+                                        usd_settlements = ['USD', 'USDT', 'USDC', 'USDE', 'DAI', 'TUSD', 'USDP', 'USDS']
+                                        
+                                        if quote_currency == 'USD' and settlement not in usd_settlements:
+                                            is_inverse_usd = True
+                                    else:
+                                        # No colon. Standard BitMEX XBTUSD is 'BTC/USD'.
+                                        if quote_part == 'USD':
+                                            is_inverse_usd = True
+                                    
+                                    if is_inverse_usd:
+                                        # Quote Volume (Base) = Volume_USD / Avg_Price
+                                        avg_price = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+                                        # Avoid division by zero
+                                        df['volume'] = df['volume'] / avg_price.replace(0, np.nan)
+                                        df['volume'] = df['volume'].fillna(0)
+                            except Exception as e:
+                                logger.warning(f"Failed to parse symbol {first_sym} for BitMEX volume check: {e}")
 
                         # Standardize columns just in case
                         # Required: time, open, high, low, close, volume
@@ -181,6 +213,12 @@ class OHLCVAggregatorService:
                         # Set index to time for alignment
                         if 'time' in df.columns:
                             df['time'] = pd.to_datetime(df['time'])
+                            # Ensure UTC
+                            if df['time'].dt.tz is None:
+                                df['time'] = df['time'].dt.tz_localize(timezone.utc)
+                            else:
+                                df['time'] = df['time'].dt.tz_convert(timezone.utc)
+                                
                             df.set_index('time', inplace=True)
                         
                         # Rename columns to include exchange suffix for clarity during debug/merge

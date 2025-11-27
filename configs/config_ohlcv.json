@@ -13,52 +13,72 @@
             "type": "backfill_ohlcv",
             "params": {
                 "timeframe": "1m",
-                "start_date": "2025-11-01T00:00:00",
-                "end_date": "2025-11-25T00:00:00"
+                "start_date": "2010-01-01T00:00:00",
+                "end_date": "2025-11-26T00:00:00"
             },
             "exchanges": {
                 "binance": {
                     "spot": {
                         "symbols": [
-                            "BTC/USDT"
+                            "BTC/USDT",
+                            "ETH/USDT",
+                            "XRP/USDT",
+                            "SOL/USDT",
+                            "BNB/USDT",
+                            "DOGE/USDT",
+                            "LTC/USDT",
+                            "LINK/USDT"
                         ]
                     },
                     "swap": {
                         "symbols": [
-                            "BTC/USDT:USDT"
+                            "BTC/USDT:USDT",
+                            "ETH/USDT:USDT",
+                            "XRP/USDT:USDT",
+                            "SOL/USDT:USDT",
+                            "BNB/USDT:USDT",
+                            "DOGE/USDT:USDT",
+                            "LTC/USDT:USDT",
+                            "LINK/USDT:USDT"
                         ]
                     }
                 },
                 "bitstamp": {
                     "spot": {
                         "symbols": [
-                            "BTC/USD"
+                            "BTC/USD",
+                            "XRP/USD"
                         ]
                     }
                 },
                 "bybit": {
                     "spot": {
                         "symbols": [
-                            "BTC/USDT"
+                            "BTC/USDT",
+                            "ETH/USDT"
                         ]
                     },
                     "swap": {
                         "symbols": [
-                            "BTC/USDT:USDT"
+                            "BTC/USDT:USDT",
+                            "ETH/USDT:USDT",
+                            "HYPE/USDT:USDT"
                         ]
                     }
                 },
                 "coinbase": {
                     "spot": {
                         "symbols": [
-                            "BTC/USD"
+                            "BTC/USD",
+                            "ETH/USD"
                         ]
                     }
                 },
                 "bitmex": {
                     "swap": {
                         "symbols": [
-                            "BTC/USD:BTC"
+                            "BTC/USD:BTC",
+                            "ETH/USD:BTC"
                         ]
                     }
                 }

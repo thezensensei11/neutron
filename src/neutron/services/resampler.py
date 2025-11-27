@@ -61,60 +61,60 @@ class ResamplerService:
 
     def resample_asset(self, asset: str, timeframes: List[str], rewrite: bool) -> Dict[str, pd.DataFrame]:
         """
-        Resamples a single asset into multiple timeframes.
-        Returns a dictionary of {timeframe: DataFrame}
+        Resamples a single asset into multiple timeframes using chunked processing.
+        Returns a dictionary of {timeframe: DataFrame} (last chunk or empty if too large).
         """
         results = {}
-        # Source path: data/aggregated/synthetic/{asset}/1m
         source_dir = self.synthetic_path / asset / "1m"
         
         if not source_dir.exists():
             logger.warning(f"No synthetic 1m data found for {asset}. Skipping.")
             return results
             
-        # Load all 1m data
-        logger.info(f"Loading 1m data for {asset}...")
-        try:
-            # Read all parquet files in the directory
-            files = sorted(list(source_dir.glob("*.parquet")))
-            if not files:
-                logger.warning(f"No parquet files found for {asset}.")
-                return results
+        # Group files by year to process in chunks
+        files = sorted(list(source_dir.glob("*.parquet")))
+        if not files:
+            logger.warning(f"No parquet files found for {asset}.")
+            return results
+            
+        files_by_year = {}
+        for f in files:
+            # Filename format: YYYY-MM-DD.parquet
+            year = f.name.split('-')[0]
+            if year not in files_by_year:
+                files_by_year[year] = []
+            files_by_year[year].append(f)
+            
+        logger.info(f"Processing {asset} in {len(files_by_year)} yearly chunks...")
+        
+        for year, year_files in sorted(files_by_year.items()):
+            logger.info(f"  Processing year {year} ({len(year_files)} files)...")
+            try:
+                dfs = []
+                for f in year_files:
+                    try:
+                        df = pd.read_parquet(f)
+                        dfs.append(df)
+                    except Exception as e:
+                        logger.error(f"Error reading {f}: {e}")
                 
-            dfs = []
-            for f in files:
-                try:
-                    df = pd.read_parquet(f)
-                    dfs.append(df)
-                except Exception as e:
-                    logger.error(f"Error reading {f}: {e}")
-            
-            if not dfs:
-                return results
+                if not dfs: continue
                 
-            full_df = pd.concat(dfs)
-            full_df['time'] = pd.to_datetime(full_df['time'])
-            full_df.set_index('time', inplace=True)
-            full_df.sort_index(inplace=True)
-            
-            # Deduplicate just in case
-            full_df = full_df[~full_df.index.duplicated(keep='last')]
-            
-            logger.info(f"Loaded {len(full_df)} rows for {asset}. Resampling...")
-            
-            for tf in timeframes:
-                resampled_df = self._process_timeframe(asset, full_df, tf, rewrite)
-                if not resampled_df.empty:
-                    results[tf] = resampled_df
+                full_df = pd.concat(dfs)
+                full_df['time'] = pd.to_datetime(full_df['time'])
+                full_df.set_index('time', inplace=True)
+                full_df.sort_index(inplace=True)
+                full_df = full_df[~full_df.index.duplicated(keep='last')]
                 
-        except Exception as e:
-            logger.error(f"Error processing {asset}: {e}")
-            import traceback
-            traceback.print_exc()
-            
-        return results
+                for tf in timeframes:
+                    self._process_timeframe_chunk(asset, full_df, tf, rewrite)
+                    
+            except Exception as e:
+                logger.error(f"Error processing chunk {year} for {asset}: {e}")
+                
+        return results # Returning empty results as we save to disk incrementally
 
-    def _process_timeframe(self, asset: str, df: pd.DataFrame, timeframe: str, rewrite: bool) -> pd.DataFrame:
+    def _process_timeframe_chunk(self, asset: str, df: pd.DataFrame, timeframe: str, rewrite: bool):
         """
         Resamples dataframe to a specific timeframe and saves it.
         Returns the resampled dataframe.
@@ -141,7 +141,7 @@ class ResamplerService:
         resampled_df['exchange'] = 'aggregated'
         
         # Rounding
-        numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'twap', 'vwap']
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'quote_volume', 'twap', 'vwap']
         # Ensure cols exist
         for col in numeric_cols:
             if col in resampled_df.columns:
@@ -200,6 +200,7 @@ class ResamplerService:
             'low': 'min',
             'close': 'last',
             'volume': 'sum',
+            'quote_volume': 'sum', # Added quote_volume aggregation
             'twap': 'mean',     # Mean of TWAPs
             'pv_vwap': 'sum'    # Sum of (Price * Volume)
         }

@@ -12,6 +12,7 @@ class TaskConfig:
 @dataclass
 class StorageConfig:
     ohlcv_path: str = "data/ohlcv" # Path for Parquet storage (OHLCV)
+    aggregated_path: str = "data/aggregated" # Path for Aggregated/Synthetic data
     questdb_host: str = "localhost"
     questdb_ilp_port: int = 9009
     questdb_pg_port: int = 8812
@@ -55,6 +56,7 @@ class ConfigLoader:
             
         storage_config = StorageConfig(
             ohlcv_path=storage_data.get('ohlcv_path', 'data/ohlcv'),
+            aggregated_path=storage_data.get('aggregated_path', 'data/aggregated'),
             questdb_host=storage_data.get('questdb_host', 'localhost'),
             questdb_ilp_port=storage_data.get('questdb_ilp_port', 9009),
             questdb_pg_port=storage_data.get('questdb_pg_port', 8812),

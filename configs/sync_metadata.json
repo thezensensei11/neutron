@@ -1,0 +1,43 @@
+{
+    "data_state_path": "states/ohlcv_data_state.json",
+    "exchange_state_path": "states/exchange_state.json",
+    "max_workers": 5,
+    "storage": {
+        "ohlcv_path": "data/ohlcv",
+        "questdb_host": "localhost",
+        "questdb_ilp_port": 9009,
+        "questdb_pg_port": 8812
+    },
+    "tasks": [
+        {
+            "type": "sync_metadata",
+            "params": {
+                "exchange": "binance"
+            }
+        },
+        {
+            "type": "sync_metadata",
+            "params": {
+                "exchange": "bitstamp"
+            }
+        },
+        {
+            "type": "sync_metadata",
+            "params": {
+                "exchange": "bybit"
+            }
+        },
+        {
+            "type": "sync_metadata",
+            "params": {
+                "exchange": "coinbase"
+            }
+        },
+        {
+            "type": "sync_metadata",
+            "params": {
+                "exchange": "bitmex"
+            }
+        }
+    ]
+}

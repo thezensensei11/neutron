@@ -52,7 +52,7 @@ class OHLCV(Base):
     
     # Composite primary key for uniqueness
     __table_args__ = (
-        PrimaryKeyConstraint("time", "symbol", "exchange", "timeframe"),
+        PrimaryKeyConstraint("time", "symbol", "exchange", "timeframe", "instrument_type"),
     )
 
 class Trade(Base):

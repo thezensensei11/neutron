@@ -30,8 +30,10 @@ class OHLCVBackfillService:
         exch_id = self.exchange.exchange_id
 
         # Check for listing date to optimize start_date
-        exchange_state = ExchangeStateManager()
-        listing_date = exchange_state.get_listing_date(self.exchange.exchange_id, instrument_type, symbol)
+        # Check for listing date to optimize start_date
+        # Use exchange instance to get listing date (handles caching and probing)
+        listing_date = self.exchange.get_listing_date(symbol)
+        self.data_logger.info(f"[{exch_id}] Listing date for {symbol}: {listing_date}")
         
         if listing_date:
             # Ensure listing_date is UTC
@@ -57,6 +59,10 @@ class OHLCVBackfillService:
                 start_date=start_date,
                 end_date=end_date
             )
+            self.data_logger.info(f"[{exch_id}] Gaps to fill for {symbol}: {len(gaps_to_fill)}")
+            for g_start, g_end in gaps_to_fill:
+                self.data_logger.info(f"  Gap: {g_start} -> {g_end}")
+
             if not gaps_to_fill:
                 msg = f"[{exch_id}] No gaps found for {symbol} {timeframe}. Data already exists."
                 self.data_logger.info(msg)
@@ -73,7 +79,8 @@ class OHLCVBackfillService:
                 task_id=f"{exch_id}_{symbol}_{timeframe}",
                 desc=f"[{exch_id}] {symbol} {timeframe}",
                 total=int(total_duration),
-                unit="s" # Seconds of data
+                unit="s", # Seconds of data
+                leave=False # Auto-close bar when done to prevent flooding
             )
 
         total_candles = 0
@@ -105,8 +112,42 @@ class OHLCVBackfillService:
                 candles = self.exchange.fetch_ohlcv(symbol, timeframe, since=current_since, limit=1000)
                 
                 if not candles:
-                    self.data_logger.info(f"[{exch_id}] No more data for {symbol} after {current_since}")
-                    break
+                    # Smart Gap Handling: If we are not near the end_date, assume it's a gap and skip forward
+                    time_to_end = (end_date - current_since).total_seconds()
+                    
+                    # If less than 1 day remaining, assume it's truly the end of data
+                    if time_to_end < 86400:
+                        self.data_logger.info(f"[{exch_id}] No more data for {symbol} after {current_since}")
+                        break
+                    
+                    # Otherwise, skip forward by one batch size (limit * timeframe)
+                    duration_seconds = self.exchange.client.parse_timeframe(timeframe)
+                    skip_seconds = duration_seconds * 1000
+                    next_since = current_since + timedelta(seconds=skip_seconds)
+                    
+                    self.data_logger.warning(f"[{exch_id}] Gap detected for {symbol} at {current_since}. Skipping to {next_since}...")
+                    
+                    # Mark gap as processed in state to prevent infinite retries
+                    if self.state_manager:
+                        self.state_manager.update_state(
+                            exchange=exch_id,
+                            instrument_type=instrument_type,
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            start_date=start_date,
+                            end_date=min(next_since, end_date)
+                        )
+                        
+                    # Update progress bar
+                    if bar:
+                        self.progress_manager.update_bar(
+                            task_id=f"{exch_id}_{symbol}_{timeframe}",
+                            advance=int(skip_seconds),
+                            desc=f"[{exch_id}] {symbol} {timeframe} (Gap)"
+                        )
+                        
+                    current_since = next_since
+                    continue
                 
                 # Filter candles beyond end_date
                 if end_date:
@@ -184,9 +225,14 @@ class OHLCVBackfillService:
                         desc=f"[{exch_id}] {symbol} {timeframe} ({speed:.0f} c/s)"
                     )
                 
-                # Update current_since to the timestamp of the last candle + 1ms
+                # Update current_since to the timestamp of the last candle + 1ms (to fetch next candle)
                 current_since = last_candle_time + timedelta(milliseconds=1)
                 
+                # Calculate candle duration for accurate state end date
+                # parse_timeframe returns seconds
+                duration_seconds = self.exchange.client.parse_timeframe(timeframe)
+                last_candle_end = last_candle_time + timedelta(seconds=duration_seconds)
+
                 # Update state after every batch for robustness
                 if self.state_manager:
                     self.state_manager.update_state(
@@ -195,17 +241,31 @@ class OHLCVBackfillService:
                         symbol=symbol,
                         timeframe=timeframe,
                         start_date=start_date,
-                        end_date=min(current_since, end_date) # Update up to where we are now, clamped
+                        end_date=min(last_candle_end, end_date) # Update up to the end of the last candle
                     )
                 
                 if current_since >= end_date:
                     break
                     
             except Exception as e:
-                err_msg = f"[{exch_id}] Error backfilling {symbol}: {e}"
-                logger.error(err_msg)
-                self.data_logger.error(err_msg)
-                time.sleep(5)
+                err_msg = str(e)
+                is_rate_limit = "Too many visits" in err_msg or "10006" in err_msg or "429" in err_msg
+                
+                if is_rate_limit:
+                    backoff_delay = min(300, 5 * (2 ** batch_count)) # Cap at 5 mins
+                    # Reset batch count on success? No, this is retrying the SAME batch? 
+                    # Actually the loop continues, so it retries the same `current_since`.
+                    # But `batch_count` increments on success. We need a separate retry counter.
+                    # For now, let's just use a simple increasing backoff based on consecutive failures?
+                    # Since we don't have a consecutive failure counter here easily without restructuring,
+                    # let's just use a larger fixed sleep for rate limits or a randomized one.
+                    # Better: sleep 60s for rate limits.
+                    logger.warning(f"[{exch_id}] Rate limit hit for {symbol}. Sleeping 60s...")
+                    time.sleep(60)
+                else:
+                    logger.error(f"[{exch_id}] Error backfilling {symbol}: {e}")
+                    self.data_logger.error(f"[{exch_id}] Error backfilling {symbol}: {e}")
+                    time.sleep(5)
                 continue
 
         duration = time.time() - start_time
@@ -213,12 +273,6 @@ class OHLCVBackfillService:
         summary = f"[{exch_id}] Range backfill complete for {symbol}. Total: {total_candles}. Avg Speed: {avg_speed:.1f} candles/s"
         self.data_logger.info(summary)
         
-        if self.state_manager:
-            self.state_manager.update_state(
-                exchange=self.exchange.exchange_id,
-                instrument_type=instrument_type,
-                symbol=symbol,
-                timeframe=timeframe,
-                start_date=start_date,
-                end_date=end_date
-            )
+        # REMOVED: Final blind state update. 
+        # State is now only updated incrementally based on actual data fetched.
+        # This prevents marking empty ranges (e.g. pre-listing) as "downloaded".
